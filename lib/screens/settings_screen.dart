@@ -96,30 +96,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           // Render disabled/dimmed when advanced tools are off so the
           // cause-and-effect is visible rather than silently hiding the
           // whole tile.
-          _buildSettingsTile(
-            context,
-            icon: Icons.ios_share_rounded,
-            title: 'Export-Ordner',
-            subtitle: !settings.advancedToolsEnabled
-                ? 'Nur verfügbar mit Erweiterten Werkzeugen'
-                : (settings.exportFolderPath ??
-                    'Zielordner für Screenshots & Clips wählen'),
-            onTap: settings.advancedToolsEnabled
-                ? () => _selectExportFolder(context, ref)
-                : () {},
-            enabled: settings.advancedToolsEnabled,
-            trailingAction: (settings.advancedToolsEnabled &&
-                    settings.exportFolderPath != null)
-                ? _FolderOpenAction(
-                    path: settings.exportFolderPath!,
-                    tooltip: 'Export-Ordner im Explorer öffnen',
-                    onError: (msg) => _showFolderErrorDialog(context,
-                        title: 'Ordner konnte nicht geöffnet werden',
-                        message: msg),
-                  )
-                : null,
-          ),
-          const SizedBox(height: 8),
+          //
+          // On iOS screenshot/clip export isn't supported (no FFmpeg in
+          // the sandbox, and the native AVPlayer doesn't expose
+          // frame/segment extraction we can route into a save-dialog),
+          // so the whole tile is omitted to avoid a dead-end setting.
+          if (!Platform.isIOS) ...[
+            _buildSettingsTile(
+              context,
+              icon: Icons.ios_share_rounded,
+              title: 'Export-Ordner',
+              subtitle: !settings.advancedToolsEnabled
+                  ? 'Nur verfügbar mit Erweiterten Werkzeugen'
+                  : (settings.exportFolderPath ??
+                      'Zielordner für Screenshots & Clips wählen'),
+              onTap: settings.advancedToolsEnabled
+                  ? () => _selectExportFolder(context, ref)
+                  : () {},
+              enabled: settings.advancedToolsEnabled,
+              trailingAction: (settings.advancedToolsEnabled &&
+                      settings.exportFolderPath != null)
+                  ? _FolderOpenAction(
+                      path: settings.exportFolderPath!,
+                      tooltip: 'Export-Ordner im Explorer öffnen',
+                      onError: (msg) => _showFolderErrorDialog(context,
+                          title: 'Ordner konnte nicht geöffnet werden',
+                          message: msg),
+                    )
+                  : null,
+            ),
+            const SizedBox(height: 8),
+          ],
           _buildSettingsTile(
             context,
             icon: Icons.refresh_rounded,
@@ -155,19 +162,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           // their keyboard shortcuts (1/2/P), and the Export-Ordner
           // setting. Kept in the "Wiedergabe" section because turning it
           // on visibly changes the player chrome.
-          _buildSwitchTile(
-            context,
-            icon: Icons.tune_rounded,
-            title: 'Erweiterte Werkzeuge',
-            subtitle: settings.advancedToolsEnabled
-                ? 'Screenshot- und Clip-Buttons im Player aktiv'
-                : 'Zeigt Screenshot- und Clip-Buttons im Player an',
-            value: settings.advancedToolsEnabled,
-            onChanged: (v) => ref
-                .read(settingsProvider.notifier)
-                .setAdvancedToolsEnabled(v),
-          ),
-          const SizedBox(height: 8),
+          //
+          // Hidden on iOS — the native AVPlayerViewController doesn't
+          // host custom Flutter chrome, and frame/segment export isn't
+          // wired up there. The toggle would flip a flag no screen reads.
+          if (!Platform.isIOS) ...[
+            _buildSwitchTile(
+              context,
+              icon: Icons.tune_rounded,
+              title: 'Erweiterte Werkzeuge',
+              subtitle: settings.advancedToolsEnabled
+                  ? 'Screenshot- und Clip-Buttons im Player aktiv'
+                  : 'Zeigt Screenshot- und Clip-Buttons im Player an',
+              value: settings.advancedToolsEnabled,
+              onChanged: (v) => ref
+                  .read(settingsProvider.notifier)
+                  .setAdvancedToolsEnabled(v),
+            ),
+            const SizedBox(height: 8),
+          ],
+          // Scrub-preview thumbnails rely on our own FFmpeg-generated
+          // sprite cache — meaningless on iOS where AVPlayer renders its
+          // own native scrub previews from the video's keyframes.
+          if (!Platform.isIOS)
           _buildSwitchTile(
             context,
             icon: Icons.image_rounded,
@@ -209,26 +226,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onTap: () => _confirmClearProgress(context, ref),
             textColor: AppTheme.accent,
           ),
-          const SizedBox(height: 8),
-          FutureBuilder<int>(
-            future: _cacheSizeFuture,
-            builder: (context, snapshot) {
-              final subtitle = switch (snapshot.connectionState) {
-                ConnectionState.done when snapshot.hasData && snapshot.data! > 0 =>
-                  'Aktuell belegt: ${_formatBytes(snapshot.data!)}',
-                ConnectionState.done => 'Cache ist leer',
-                _ => 'Größe wird berechnet…',
-              };
-              return _buildSettingsTile(
-                context,
-                icon: Icons.image_not_supported_rounded,
-                title: 'Vorschaubild-Cache leeren',
-                subtitle: subtitle,
-                onTap: () => _confirmClearThumbnails(context, ref),
-                textColor: AppTheme.accent,
-              );
-            },
-          ),
+          // Thumbnail cache only exists on desktop (FFmpeg-generated
+          // scrub sprites). On iOS AVPlayer has no Flutter-side cache,
+          // so there's nothing to display a size for — omit the tile
+          // rather than show a confusing "0 B" permanently.
+          if (!Platform.isIOS) ...[
+            const SizedBox(height: 8),
+            FutureBuilder<int>(
+              future: _cacheSizeFuture,
+              builder: (context, snapshot) {
+                final subtitle = switch (snapshot.connectionState) {
+                  ConnectionState.done when snapshot.hasData && snapshot.data! > 0 =>
+                    'Aktuell belegt: ${_formatBytes(snapshot.data!)}',
+                  ConnectionState.done => 'Cache ist leer',
+                  _ => 'Größe wird berechnet…',
+                };
+                return _buildSettingsTile(
+                  context,
+                  icon: Icons.image_not_supported_rounded,
+                  title: 'Vorschaubild-Cache leeren',
+                  subtitle: subtitle,
+                  onTap: () => _confirmClearThumbnails(context, ref),
+                  textColor: AppTheme.accent,
+                );
+              },
+            ),
+          ],
 
           const SizedBox(height: 32),
 
@@ -237,11 +260,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           // behalten" global toggle, and the per-item reset tree —
           // all collapsible so the screen stays usable even with
           // dozens of items.
-          _buildSectionHeader(context, 'Vorschaubilder-Konfig'),
-          const SizedBox(height: 12),
-          const ThumbnailConfigSection(),
-
-          const SizedBox(height: 32),
+          //
+          // Desktop-only for the same reason as the cache tile above —
+          // iOS has no Flutter-managed thumbnail cache to configure.
+          if (!Platform.isIOS) ...[
+            _buildSectionHeader(context, 'Vorschaubilder-Konfig'),
+            const SizedBox(height: 12),
+            const ThumbnailConfigSection(),
+            const SizedBox(height: 32),
+          ],
 
           // Help / Documentation section
           _buildSectionHeader(context, 'Hilfe'),

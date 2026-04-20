@@ -23,22 +23,31 @@ class EpisodeTile extends StatefulWidget {
 
 class _EpisodeTileState extends State<EpisodeTile> {
   bool _isHovered = false;
+  // Touch-press feedback for iPad — hover never fires on touch devices,
+  // so we drive the same row-highlight off onTapDown/Up/Cancel. Both
+  // states can be true briefly on desktop (mouse click = hover + press);
+  // that's fine, the highlight color is the same either way.
+  bool _isPressed = false;
 
   @override
   Widget build(BuildContext context) {
+    final highlight = _isHovered || _isPressed;
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: widget.onTap,
+        onTapDown: (_) => setState(() => _isPressed = true),
+        onTapUp: (_) => setState(() => _isPressed = false),
+        onTapCancel: () => setState(() => _isPressed = false),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: widget.isPlaying
                 ? AppTheme.accent.withValues(alpha: 0.15)
-                : _isHovered
+                : highlight
                     ? AppTheme.surfaceLight
                     : Colors.transparent,
             borderRadius: BorderRadius.circular(8),
