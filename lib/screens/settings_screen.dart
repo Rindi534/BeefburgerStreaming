@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart' as url_launcher;
+import 'package:path_provider/path_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/media_library_provider.dart';
 import '../providers/watch_progress_provider.dart';
@@ -511,6 +513,33 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   ///   user-facing dialog explaining what went wrong, rather than silently
   ///   accepting a path that will later explode in the middle of a scan.
   Future<String?> _pickFolder(BuildContext context, String dialogTitle) async {
+    // iOS: apps are sandboxed, there's no "pick any folder anywhere"
+    // dialog. Instead we always use the app's Documents directory —
+    // which is exposed to the user via Files → On My iPad →
+    // BeefburgerStreaming thanks to UIFileSharingEnabled. The user
+    // drops their media in there and everything works.
+    //
+    // We skip the picker UI entirely and just return the Documents
+    // path. The caller still runs validation, so a missing/unwritable
+    // directory gets the normal error dialog.
+    if (Platform.isIOS) {
+      final docs = await getApplicationDocumentsDirectory();
+      final docsPath = docs.path;
+      if (!context.mounted) return null;
+      await _showFolderErrorDialog(
+        context,
+        title: 'Medien-Ordner auf iPad',
+        message:
+            'Auf iPad benutzt BeefburgerStreaming einen festen Ordner:\n\n'
+            '$docsPath\n\n'
+            'Öffne die Dateien-App → „Auf meinem iPad" → '
+            '„BeefburgerStreaming" und lege deine Videos, Serien-'
+            'Ordner und Cover dort ab. Nach dem Schließen dieses '
+            'Hinweises startet der Scan automatisch.',
+      );
+      return docsPath;
+    }
+
     String? picked;
     try {
       picked = await FilePicker.platform.getDirectoryPath(
@@ -696,7 +725,19 @@ class _FolderOpenAction extends StatelessWidget {
       return;
     }
     try {
-      if (Platform.isWindows) {
+      if (Platform.isIOS) {
+        // iOS can't shell out. Open the Files app at the app's
+        // Documents folder (which is where media lives in the iOS
+        // build) via the documented shareddocuments:// scheme.
+        final uri = Uri.parse('shareddocuments://$path');
+        final ok = await url_launcher.launchUrl(uri);
+        if (!ok) {
+          onError(
+              'Die Dateien-App konnte nicht geöffnet werden. Öffne '
+              'sie manuell und navigiere zu „Auf meinem iPad → '
+              'BeefburgerStreaming".');
+        }
+      } else if (Platform.isWindows) {
         // `explorer` returns exit-code 1 even on success, so we do NOT
         // check exitCode — just detach the process and move on.
         await Process.start('explorer', [path],

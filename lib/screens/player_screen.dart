@@ -13,8 +13,19 @@ import '../services/export_service.dart';
 import '../services/fullscreen_service.dart';
 import '../services/thumbnail_service.dart';
 import 'settings_screen.dart';
+import 'ios_player_screen.dart';
 
-class PlayerScreen extends ConsumerStatefulWidget {
+/// Platform-dispatching player entry point.
+///
+/// On Windows (and any desktop build) this returns the full
+/// media_kit-based player with our custom chrome — unchanged from the
+/// pre-iOS codebase. On iOS/iPadOS it returns a thin wrapper around
+/// the native AVPlayerViewController bridge, which gives us system
+/// PiP, AirPlay and scrub-previews for free.
+///
+/// All call sites keep using `PlayerScreen(...)` — they don't need to
+/// know about the split.
+class PlayerScreen extends StatelessWidget {
   final String filePath;
   final String title;
   final String? episodeTitle;
@@ -25,9 +36,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final String? nextEpisodeTitle;
   final String? nextEpisodeSubtitlePath;
   final Duration? startPosition;
-  /// Full episode list for chained next-episode navigation
   final List<Episode>? allEpisodes;
-  /// Index of current episode in allEpisodes
   final int? currentEpisodeIndex;
 
   const PlayerScreen({
@@ -47,10 +56,79 @@ class PlayerScreen extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
+  Widget build(BuildContext context) {
+    if (Platform.isIOS) {
+      return IOSPlayerScreen(
+        filePath: filePath,
+        title: title,
+        episodeTitle: episodeTitle,
+        mediaId: mediaId,
+        subtitlePath: subtitlePath,
+        nextEpisodeFilePath: nextEpisodeFilePath,
+        nextEpisodeTitle: nextEpisodeTitle,
+        nextEpisodeSubtitlePath: nextEpisodeSubtitlePath,
+        startPosition: startPosition,
+        allEpisodes: allEpisodes,
+        currentEpisodeIndex: currentEpisodeIndex,
+      );
+    }
+    return _DesktopPlayerScreen(
+      filePath: filePath,
+      title: title,
+      episodeTitle: episodeTitle,
+      mediaId: mediaId,
+      coverImagePath: coverImagePath,
+      subtitlePath: subtitlePath,
+      nextEpisodeFilePath: nextEpisodeFilePath,
+      nextEpisodeTitle: nextEpisodeTitle,
+      nextEpisodeSubtitlePath: nextEpisodeSubtitlePath,
+      startPosition: startPosition,
+      allEpisodes: allEpisodes,
+      currentEpisodeIndex: currentEpisodeIndex,
+    );
+  }
 }
 
-class _PlayerScreenState extends ConsumerState<PlayerScreen> {
+/// Desktop (Windows / macOS / Linux) implementation. Full media_kit
+/// player with our custom Flutter chrome. This is the original
+/// PlayerScreen — renamed so the public `PlayerScreen` above can
+/// platform-dispatch without changing call sites.
+class _DesktopPlayerScreen extends ConsumerStatefulWidget {
+  final String filePath;
+  final String title;
+  final String? episodeTitle;
+  final String? mediaId;
+  final String? coverImagePath;
+  final String? subtitlePath;
+  final String? nextEpisodeFilePath;
+  final String? nextEpisodeTitle;
+  final String? nextEpisodeSubtitlePath;
+  final Duration? startPosition;
+  /// Full episode list for chained next-episode navigation
+  final List<Episode>? allEpisodes;
+  /// Index of current episode in allEpisodes
+  final int? currentEpisodeIndex;
+
+  const _DesktopPlayerScreen({
+    required this.filePath,
+    required this.title,
+    this.episodeTitle,
+    this.mediaId,
+    this.coverImagePath,
+    this.subtitlePath,
+    this.nextEpisodeFilePath,
+    this.nextEpisodeTitle,
+    this.nextEpisodeSubtitlePath,
+    this.startPosition,
+    this.allEpisodes,
+    this.currentEpisodeIndex,
+  });
+
+  @override
+  ConsumerState<_DesktopPlayerScreen> createState() => _DesktopPlayerScreenState();
+}
+
+class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
   late final Player _player;
   late final VideoController _videoController;
 

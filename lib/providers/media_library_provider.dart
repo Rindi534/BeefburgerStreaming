@@ -362,6 +362,14 @@ class MediaLibraryNotifier extends StateNotifier<MediaLibraryState> {
 
     final service = ThumbnailService.instance;
     await service.initialize();
+
+    // On iOS we don't ship ffmpeg (sandboxed apps can't spawn child
+    // processes anyway). Thumbnail generation for the home-screen
+    // grid and seekbar previews is handled via AVAssetImageGenerator
+    // in a later phase; for now just no-op cleanly and avoid showing
+    // a "FFmpeg missing" banner that the user can't do anything about.
+    if (Platform.isIOS) return;
+
     final ffmpeg = await service.findFFmpeg();
 
     if (ffmpeg == null) {

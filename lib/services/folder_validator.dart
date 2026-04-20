@@ -28,6 +28,11 @@ class FolderValidator {
       return 'Ordner existiert nicht (mehr):\n$path';
     }
 
+    // Cloud-sync detection and the Windows-path hint are desktop-only.
+    // On iOS the path is always the sandboxed Documents directory,
+    // which lives under /var/mobile/... — we trust it implicitly.
+    if (Platform.isIOS) return null;
+
     final cloudProvider = _detectCloudProvider(path);
     if (cloudProvider != null) {
       return 'Dieser Ordner liegt in $cloudProvider.\n\n'

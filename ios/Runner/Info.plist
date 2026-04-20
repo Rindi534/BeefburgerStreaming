@@ -7,7 +7,27 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Home Streaming</string>
+	<string>BeefburgerStreaming</string>
+	<!-- File-sharing keys: expose the app's Documents directory in the
+	     Files app so the user can drag their Medien-Ordner there and
+	     have the library scanner pick it up. Without both keys, the
+	     only way media can reach the app on iOS would be via the
+	     document picker (which doesn't give stable paths). -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<!-- Usage description shown the first time we ask for access to
+	     the user's Files / iCloud documents. Required by App Review. -->
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>BeefburgerStreaming braucht Zugriff auf deine Dateien, um die lokalen Film- und Serien-Videos zu lesen.</string>
+	<!-- Background audio: lets video playback continue when the app is
+	     in the background (Picture-in-Picture, Split View, Home press).
+	     Required for AVPlayer-based PiP to work. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

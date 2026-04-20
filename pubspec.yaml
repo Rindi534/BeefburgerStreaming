@@ -14,6 +14,12 @@ dependencies:
   media_kit_video: ^1.2.5
   media_kit_libs_video: ^1.0.5
   media_kit_libs_windows_video: ^1.0.10
+  # iOS backend for media_kit — used as fallback on iPhone/iPad builds.
+  # The native AVPlayer path (see services/ios_native_player_service.dart)
+  # is preferred there because it gives us system PiP + AirPlay, but we
+  # still link libmpv so any code that opens a media_kit Player (e.g.
+  # thumbnail preview generation) keeps working.
+  media_kit_libs_ios_video: ^1.1.4
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   flutter_riverpod: ^2.5.1
@@ -22,6 +28,13 @@ dependencies:
   path: ^1.9.0
   google_fonts: ^6.2.1
   window_manager: ^0.4.3
+  # iOS-only: native AVAssetImageGenerator wrapper for thumbnails.
+  # On Windows we keep using the bundled ffmpeg.exe (no change).
+  video_thumbnail: ^0.5.3
+  # Cross-platform "open file / share" — replaces the Windows-only
+  # Process.start('explorer', ...) call on iOS where shelling out is
+  # forbidden by the sandbox.
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:
