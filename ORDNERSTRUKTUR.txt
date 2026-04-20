@@ -1,0 +1,260 @@
+==============================================================================
+           BeefburgerStreaming - Medien-Ordner: Aufbau & Pflege
+==============================================================================
+
+Diese Datei erklaert Schritt fuer Schritt, wie dein Medien-Ordner aufgebaut
+sein muss, damit die App deine Filme und Serien automatisch erkennt.
+
+Fuer Funktionen und Bedienung siehe ANLEITUNG.txt (liegt daneben).
+
+
+INHALT
+==============================================================================
+  1. Schnellstart - so sieht ein fertiger Ordner aus
+  2. Den Medien-Ordner anlegen
+  3. Filme ablegen
+  4. Serien ablegen
+  5. Dateinamen fuer Episoden
+  6. Namen fuer Staffel-Ordner
+  7. Unterstuetzte Video-Formate
+  8. Untertitel
+  9. Cover, Banner, Thumbnail - die drei Bilder
+ 10. Umbenennen, Verschieben, Loeschen
+ 11. Was die App NICHT selbst macht
+
+
+1. SCHNELLSTART - SO SIEHT EIN FERTIGER ORDNER AUS
+==============================================================================
+
+  Medien/
+  |
+  +-- Breaking Bad/                    Serie (hat Staffel-Unterordner)
+  |   |
+  |   +-- Season 1/
+  |   |   +-- S01E01 - Pilot.mp4
+  |   |   +-- S01E01 - Pilot.srt       Externer Untertitel (optional)
+  |   |   +-- S01E02 - Cats in the Bag.mkv
+  |   |
+  |   +-- Season 2/
+  |   |   +-- S02E01 - Seven Thirty-Seven.mp4
+  |   |
+  |   +-- cover.jpg                    Hauptkachel (optional)
+  |   +-- banner.jpg                   Kopfbild Detail-Ansicht (optional)
+  |   +-- thumbnail.jpg                Weiterschauen-Bild (optional)
+  |
+  +-- The Office/                      Deutsche Benennung geht genauso
+  |   +-- Staffel 1/
+  |   |   +-- S01E01 - Pilot.mp4
+  |   +-- Staffel 2/
+  |       +-- ...
+  |
+  +-- Inception/                       Film im eigenen Ordner (fuer Cover)
+  |   +-- Inception.mp4
+  |   +-- cover.jpg
+  |
+  +-- Interstellar.mp4                 Film als einzelne Datei (ohne Ordner)
+
+Mehr musst du eigentlich nicht wissen. Der Rest dieses Dokuments ist
+Nachschlag-Werk.
+
+
+2. DEN MEDIEN-ORDNER ANLEGEN
+==============================================================================
+
+Der Medien-Ordner ist die eine Wurzel, in der alle deine Filme und Serien
+liegen. Er kann auf jeder Festplatte sein - intern, extern, USB. Beispiele:
+
+    Windows:   C:\Users\DeinName\Videos\Medien
+               D:\Filme und Serien
+               E:\Media
+
+Beim ersten Start der App waehlst du diesen Ordner ueber:
+
+    Einstellungen (Zahnrad oben rechts) > Medien-Ordner
+
+Die App scannt ihn rekursiv und erkennt automatisch, was Film und was Serie
+ist. Es gibt keine manuelle Zuordnung - alles laeuft ueber den Aufbau.
+
+
+3. FILME ABLEGEN
+==============================================================================
+
+Zwei gleichwertige Moeglichkeiten:
+
+  a) EINZELNE DATEI IM HAUPTORDNER
+     Einfach die Video-Datei direkt in den Medien-Ordner legen:
+
+         Medien/Interstellar.mp4
+         Medien/The Dark Knight.mkv
+
+     Der Dateiname (ohne Endung) wird als Titel angezeigt.
+
+  b) EIGENER ORDNER PRO FILM (empfohlen, wenn du Cover/Banner willst)
+
+         Medien/Inception/
+             Inception.mp4
+             cover.jpg
+
+     Der Ordnername wird als Titel angezeigt. Cover/Banner/Thumbnail
+     legst du dazu (siehe Punkt 9).
+
+WICHTIG: Ein Film-Ordner darf hoechstens EINE Video-Datei enthalten.
+Sobald es mehrere Videos und/oder Staffel-Unterordner gibt, wird der
+Ordner als Serie erkannt.
+
+
+4. SERIEN ABLEGEN
+==============================================================================
+
+Eine Serie ist ein Ordner mit mindestens einem Staffel-Unterordner, der
+Episoden-Dateien enthaelt. Schema:
+
+    Medien/<Serien-Name>/<Staffel-Ordner>/<Episoden-Datei>
+
+Beispiel:
+
+    Medien/Breaking Bad/
+        Season 1/
+            S01E01 - Pilot.mp4
+            S01E02 - Cats in the Bag.mkv
+        Season 2/
+            S02E01 - Seven Thirty-Seven.mp4
+
+Der Serien-Ordner-Name wird als Serien-Titel angezeigt. Staffeln werden
+aus den Unterordnern gelesen, Episoden aus den Dateinamen.
+
+
+5. DATEINAMEN FUER EPISODEN
+==============================================================================
+
+Das Format gibt der App an, welche Staffel/Episode eine Datei ist. Alle
+diese Varianten funktionieren:
+
+    S01E01 - Pilot.mp4                    Empfohlen
+    S01E02 - Cats in the Bag.mkv
+    S1E3 - Grilled.mp4                    Kurz
+    1x01 - Pilot.avi                      Klassisch
+    Episode 1 - Pilot.mp4                 Wortform
+
+Die erste Zahl ist die Staffel, die zweite die Episode. Alles nach dem
+Trennzeichen ist optional Episoden-Titel und rein kosmetisch.
+
+WICHTIG: Ohne erkennbare Staffel-/Episodennummer taucht die Datei nicht
+in der Episoden-Liste auf. Wenn etwas fehlt, stimmt meist der Dateiname.
+
+
+6. NAMEN FUER STAFFEL-ORDNER
+==============================================================================
+
+Mehrere Schreibweisen werden erkannt:
+
+    Season 1           Englisch
+    Staffel 1          Deutsch
+    S01                Kurzform mit fuehrender Null
+    S1                 Kurzform ohne
+
+Die Nummer am Ende ist entscheidend. Achte auf Konsistenz innerhalb einer
+Serie - mische nicht "Season 1" mit "Staffel 02".
+
+
+7. UNTERSTUETZTE VIDEO-FORMATE
+==============================================================================
+
+    .mp4    Am kompatibelsten, kleinste Probleme
+    .mkv    Beste Untertitel- und Audio-Track-Unterstuetzung (empfohlen)
+    .avi    Aelteres Format, funktioniert
+    .iso    Disc-Image (DVD/Blu-ray)
+
+Wenn moeglich, .mkv oder .mp4 verwenden.
+
+
+8. UNTERTITEL
+==============================================================================
+
+  a) EXTERNE .SRT-DATEIEN
+     Dateiname muss exakt mit dem Video uebereinstimmen, nur die
+     Endung aendert sich:
+
+         S01E01 - Pilot.mp4
+         S01E01 - Pilot.srt           <- wird automatisch erkannt
+
+     Liegt die .srt im gleichen Ordner wie das Video, wird sie im
+     Player als Untertitel-Spur angeboten.
+
+  b) EINGEBETTETE UNTERTITEL (in .mkv)
+     Werden automatisch gelesen. Bei mehreren Spuren zeigt der Player
+     ein Auswahl-Menue.
+
+An/aus im Player: Button unten rechts oder Taste "C" / "S".
+Standardverhalten: Einstellungen > Wiedergabe > "Untertitel standardmaessig".
+
+
+9. COVER, BANNER, THUMBNAIL - DIE DREI BILDER
+==============================================================================
+
+Pro Serie oder Film gibt es drei optionale Bilder. Jedes hat einen anderen
+Zweck in der App:
+
+  +------------+--------------------------------------------------------+
+  | Datei      | Wird wo angezeigt                                      |
+  +------------+--------------------------------------------------------+
+  | cover.jpg  | Hauptraster auf der Startseite (Hochformat, ~300x450)  |
+  | banner.jpg | Grosses Kopfbild in der Detail-Ansicht (~1280x400)     |
+  | thumbnail. | "Weiterschauen"-Leiste oben auf der Startseite (16:9)  |
+  +------------+--------------------------------------------------------+
+
+Dateien liegen im Wurzel-Ordner der Serie bzw. des Films:
+
+    Medien/Breaking Bad/cover.jpg
+    Medien/Breaking Bad/banner.jpg
+    Medien/Breaking Bad/thumbnail.jpg
+
+Beide Endungen .jpg und .png werden akzeptiert.
+
+Alternativ erkannte Namen:  poster.jpg, folder.jpg
+
+FALLBACK-KASKADEN (wenn ein Bild fehlt, wird der Reihe nach gesucht):
+
+    Startseite-Raster:        cover  -> thumbnail -> banner -> Auto
+    Detail-Banner:            banner -> cover     -> thumbnail
+    Weiterschauen-Leiste:     thumbnail -> banner -> cover  -> Auto
+
+"Auto" bedeutet: Die App erzeugt ein Standbild aus dem Video (Frame bei
+ca. 10 % Laufzeit) als Platzhalter, damit nichts leer bleibt.
+
+
+10. UMBENENNEN, VERSCHIEBEN, LOESCHEN
+==============================================================================
+
+Die App beobachtet den Medien-Ordner NICHT live. Aenderungen werden erst
+sichtbar nach einem Scan ueber:
+
+    Einstellungen > Bibliothek aktualisieren
+
+Beim Scan erkennt sie drei Arten von Aenderungen und fragt dich in
+einem Dialog:
+
+  HINZUGEFUEGT   neue Episoden/Filme (gruen). Nichts zu tun.
+  ENTFERNT       Dateien verschwunden (rot). Optional Cache loeschen.
+  GEAENDERT      gleicher Dateiname, andere Dateigroesse (orange).
+                 Inhalt hat sich wahrscheinlich geaendert -
+                 Vorschaubilder werden typischerweise neu erzeugt.
+
+Details zum Cache-Verhalten siehe ANLEITUNG.txt Punkt 9.
+
+
+11. WAS DIE APP NICHT SELBST MACHT
+==============================================================================
+
+  - Nichts herunterladen. Alle Dateien muessen lokal vorliegen.
+  - Keine Metadaten aus dem Internet ziehen. Titel kommt aus Ordner-
+    bzw. Dateiname.
+  - Keine Dateien umbenennen. Du entscheidest die Struktur.
+  - Keine Dateien loeschen. Auch nicht beim "Cache leeren" - das
+    loescht nur generierte Vorschaubilder, nie die Originale.
+
+
+==============================================================================
+                   Siehe ANLEITUNG.txt fuer Bedienung
+                     BeefburgerStreaming v1.5.6
+==============================================================================

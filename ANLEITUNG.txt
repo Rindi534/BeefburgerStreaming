@@ -1,0 +1,483 @@
+==============================================================================
+             BeefburgerStreaming - Komplette Bedienungs-Anleitung
+==============================================================================
+
+Diese Datei erklaert alle Funktionen der App Schritt fuer Schritt.
+Fuer den Aufbau des Medien-Ordners siehe ORDNERSTRUKTUR.txt.
+
+
+INHALT
+==============================================================================
+   1. Was ist BeefburgerStreaming?
+   2. Erster Start - in zwei Minuten einsatzbereit
+   3. Startseite
+   4. Weiterschauen-Leiste
+   5. Detail-Ansicht
+        5a. Film
+        5b. Serie (Staffeln + Episoden)
+   6. Der Video-Player
+        6a. Steuerleiste unten
+        6b. Untertitel
+        6c. Audio-Spuren
+        6d. Auto-Play: Naechste Episode
+        6e. Erweiterte Werkzeuge: Screenshot & Clip
+   7. Vorschaubilder in der Seekleiste
+   8. Bibliothek aktualisieren (Aenderungs-Erkennung)
+   9. Cache-Verwaltung fuer Vorschaubilder
+        9a. Wann wird geloescht?
+        9b. Behaltung-Flags (pro Medium schuetzen)
+        9c. Archiv (frueher vorhanden, nicht mehr da)
+        9d. Cache einzeln zuruecksetzen (Baum-Ansicht)
+        9e. Gesamten Cache leeren
+        9f. Bulk-Aktionen
+  10. Einstellungen im Detail
+  11. Tastenkuerzel (Windows Desktop)
+  12. Tipps & bekannte Einschraenkungen
+
+
+1. WAS IST BEEFBURGERSTREAMING?
+==============================================================================
+
+Eine lokale Streaming-App fuer deine eigenen Filme und Serien. Laeuft auf
+Windows-Desktop, braucht kein Internet, keinen Server und keinen Account.
+
+Das Prinzip:
+  - Du legst deine Videos in einen Ordner.
+  - Die App scannt den Ordner und baut eine Oberflaeche im Netflix-Stil
+    mit Kacheln, "Weiterschauen", Seekbar-Vorschaubildern und allem
+    drum und dran.
+  - Alles bleibt auf deinem Geraet. Keine Uploads. Keine Cloud.
+
+
+2. ERSTER START - IN ZWEI MINUTEN EINSATZBEREIT
+==============================================================================
+
+  1) Medien-Ordner vorbereiten
+     Lege deine Filme und Serien so ab, wie in ORDNERSTRUKTUR.txt
+     beschrieben. Mindest-Voraussetzung: ein Ordner mit mindestens
+     einer Video-Datei.
+
+  2) App starten
+     Der erste Bildschirm ist leer - das ist normal, die App weiss noch
+     nicht wo deine Medien liegen.
+
+  3) Medien-Ordner auswaehlen
+     Oben rechts auf das Zahnrad (Einstellungen) > "Medien-Ordner" >
+     Ordner waehlen.
+
+  4) Scan laeuft automatisch
+     Nach der Auswahl scannt die App den Ordner rekursiv. Filme,
+     Serien, Staffeln und Episoden werden automatisch erkannt. Cover
+     und Banner (falls vorhanden) werden eingelesen.
+
+  5) Fertig
+     Du landest auf der Startseite und kannst alles direkt ansehen.
+
+
+3. STARTSEITE
+==============================================================================
+
+Die Startseite besteht aus zwei Bereichen:
+
+  OBEN:  "Weiterschauen"-Leiste (nur sichtbar, wenn es Fortschritt gibt)
+  UNTEN: Raster aller Filme und Serien
+
+Jede Kachel zeigt das Cover des Mediums. Fehlt ein Cover, wird aus dem
+Video ein Standbild als Platzhalter erzeugt.
+
+  - Klick auf eine Kachel oeffnet die Detail-Ansicht.
+  - Hover zeigt einen sanften Zoom-Effekt.
+
+
+4. WEITERSCHAUEN-LEISTE
+==============================================================================
+
+Sobald du etwas angefangen hast, erscheint oben die "Weiterschauen"-Leiste:
+eine horizontale Reihe mit grossen Vorschau-Karten aller angefangenen
+Filme und Episoden.
+
+BEDIENUNG DER LEISTE:
+  - Per Mausrad: einfach ueber die Leiste scrollen.
+  - Per Maus-Drag: irgendwo hineinklicken und ziehen.
+  - Per Pfeile: links/rechts am Rand erscheinen Pfeil-Buttons
+    automatisch, sobald mehr Karten da sind als sichtbar. Sind alle
+    Karten gleichzeitig zu sehen, verschwinden die Pfeile.
+
+FORTSCHRITTSBALKEN:
+  Unter jeder Karte zeigt ein duenner Balken, wie weit du bist.
+
+AUTOMATISCH FERTIG:
+  Ab 90 % Fortschritt gilt eine Episode/ein Film als "gesehen" und
+  wird aus der Leiste entfernt.
+
+BILD DER KARTE:
+  Bevorzugt wird "thumbnail.jpg" des Mediums (Querformat, 16:9).
+  Fallback: banner -> cover -> Auto-Frame aus dem Video.
+
+
+5. DETAIL-ANSICHT
+==============================================================================
+
+Die Detail-Ansicht oeffnet sich per Klick auf eine Kachel. Zurueck geht's
+mit Escape oder dem Pfeil oben links.
+
+
+5a. FILM
+------------------------------------------------------------------------------
+
+  - Grosses Kopfbild (banner > cover > thumbnail > Auto).
+  - Titel + evtl. gespeicherter Fortschritt.
+  - Grosser "Abspielen"-Button - laedt das Video mit letzter
+    Position (falls vorhanden) in den Player.
+
+
+5b. SERIE (Staffeln + Episoden)
+------------------------------------------------------------------------------
+
+  - Grosses Kopfbild + Serien-Titel.
+  - STAFFEL-LEISTE direkt darunter: horizontale Chips pro Staffel
+    (Season 1, Season 2, ...). Aktive Staffel ist hervorgehoben.
+
+    Bedienung der Staffel-Leiste:
+      - Mausrad ueber der Leiste scrollt durch die Staffeln.
+      - Maus-Drag funktioniert auch.
+      - Bei vielen Staffeln erscheinen links/rechts Pfeil-Buttons,
+        die wieder verschwinden, sobald alle Staffeln ins Bild passen.
+
+  - EPISODENLISTE darunter, scrollbar. Jede Zeile zeigt Episodennummer,
+    Titel, Dauer und Fortschritt.
+  - Die zuletzt angesehene Episode ist markiert.
+  - Klick auf eine Episode startet sie im Player.
+
+
+6. DER VIDEO-PLAYER
+==============================================================================
+
+Der Player laeuft im Vollbild-artigen Modus. Die Steuerleiste blendet
+sich nach ~3 Sekunden ohne Maus-Bewegung automatisch aus und erscheint
+wieder, sobald du die Maus bewegst.
+
+  - Doppelklick oder Leertaste: Pause/Abspielen.
+  - Escape: zurueck zur Uebersicht (Position wird gespeichert).
+
+
+6a. STEUERLEISTE UNTEN
+------------------------------------------------------------------------------
+
+Von links nach rechts:
+
+    Play/Pause     Aktueller Status. Leertaste oder Doppelklick auch.
+    Zeit           "00:12:34 / 00:45:10"
+    Seekbar        Klicken oder ziehen, um zu spulen.
+                   Hover zeigt Vorschaubild (siehe Punkt 7).
+    Lautstaerke    Regler. M = stummschalten.
+    Untertitel     Button fuer Spur-Auswahl. Taste C oder S.
+    Audio          Musiknote fuer Spur-Auswahl. Taste A = durchschalten.
+    Vollbild       Taste F.
+
+Bei aktivierten "Erweiterten Werkzeugen" (siehe 6e) kommen rechts noch
+Screenshot- und Clip-Buttons dazu.
+
+
+6b. UNTERTITEL
+------------------------------------------------------------------------------
+
+Erkannt werden:
+  - Externe .srt-Dateien im gleichen Ordner, mit gleichem Dateinamen.
+  - Eingebettete Untertitel aus .mkv-Dateien.
+
+Bedienung:
+  - Button im Player oder Taste C/S.
+  - Bei mehreren Spuren: Auswahl-Menue mit allen gefundenen Spuren.
+
+Standard-Verhalten (an/aus beim Video-Start):
+    Einstellungen > Wiedergabe > "Untertitel standardmaessig".
+
+
+6c. AUDIO-SPUREN
+------------------------------------------------------------------------------
+
+Hat ein Video mehrere Tonspuren (z. B. Deutsch + Englisch), erscheint
+automatisch das Musiknoten-Symbol unten rechts.
+
+  - Klick auf die Note oeffnet die Spur-Auswahl.
+  - Taste A schaltet reihum durch alle Spuren.
+  - Die aktive Spur ist farbig markiert.
+
+
+6d. AUTO-PLAY: NAECHSTE EPISODE
+------------------------------------------------------------------------------
+
+Am Ende einer Episode (Serien-Staffel-Ordner) erscheint ein 10-Sekunden-
+Countdown mit Vorschau der naechsten Folge. Optionen:
+
+  - Abwarten: naechste Folge startet automatisch.
+  - "Jetzt starten": uebersprint Countdown.
+  - "Abbrechen": bleibt auf Schwarzbild/zurueck zur Uebersicht.
+
+Die naechste Folge ist die Datei mit der naechstgroesseren Episoden-
+Nummer im selben Staffel-Ordner.
+
+
+6e. ERWEITERTE WERKZEUGE: SCREENSHOT & CLIP
+------------------------------------------------------------------------------
+
+Muss erst aktiviert werden unter:
+    Einstellungen > Wiedergabe > "Erweiterte Werkzeuge"
+
+Dann erscheinen im Player zwei zusaetzliche Buttons und Tasten:
+
+  SCREENSHOT  (Taste P)
+    Speichert den aktuellen Frame als .png im Export-Ordner.
+    Dateiname-Schema: "<Medium> - <Episode> - <Zeitstempel>.png".
+
+  CLIP  (Taste 1 = Start, Taste 2 = Ende)
+    1 setzt die Start-Markierung auf die aktuelle Position.
+    2 setzt die End-Markierung - der Ausschnitt wird automatisch als
+    .mp4 im Export-Ordner gespeichert.
+    Zwischen Start und Ende muessen mindestens 0.5 Sekunden liegen.
+    Waehrend der Markierung ist die Seekbar farbig hervorgehoben.
+
+  EXPORT-ORDNER
+    Wird in Einstellungen > Medienbibliothek > "Export-Ordner"
+    festgelegt. Fehlt der Ordner, werden Exporte in den Standard-
+    Dokumenten-Ordner geschrieben.
+
+
+7. VORSCHAUBILDER IN DER SEEKLEISTE
+==============================================================================
+
+Aktivieren unter:
+    Einstellungen > Wiedergabe > "Vorschaubilder in der Seekleiste"
+
+Ist das an, erzeugt die App beim Scan fuer jedes Video eine Reihe kleiner
+JPG-Frames (alle paar Sekunden einen). Beim Hovern ueber der Seekbar
+siehst du dann den Frame der Zielposition - wie bei YouTube/Netflix.
+
+WO LIEGT DAS?
+  Die Frames liegen im lokalen App-Cache (%APPDATA%\...). Keine
+  Aenderung an deinen Original-Dateien.
+
+FORTSCHRITT BEIM ERSTELLEN
+  Waehrend der Erstellung erscheint oben auf der Startseite ein Balken
+  "Vorschaubilder werden erstellt (X von Y)".
+
+  - "Stopp"-Button: bricht die Erstellung sauber ab. Bereits fertige
+    Videos bleiben fertig - beim naechsten Start wird nur fortgesetzt.
+  - Absturz/Hart-Schliessen ist ungefaehrlich: unfertige Ordner haben
+    keinen ".done"-Marker und werden beim naechsten Start erkannt und
+    automatisch neu angelegt. Kein Datenverlust.
+
+
+8. BIBLIOTHEK AKTUALISIEREN (AENDERUNGS-ERKENNUNG)
+==============================================================================
+
+Die App beobachtet deinen Medien-Ordner NICHT live. Du stoesst Updates
+manuell an ueber:
+    Einstellungen > "Bibliothek aktualisieren"
+
+Die App merkt sich pro Medium eine Struktur-Signatur (Dateinamen +
+Groessen). Beim Scan vergleicht sie und zeigt einen Dialog, wenn sich
+etwas geaendert hat:
+
+  HINZUGEFUEGT (gruen)
+    Neue Folgen oder Filme. Es gibt nichts zu tun - Vorschaubilder
+    werden im normalen Zuge erzeugt.
+
+  ENTFERNT (rot)
+    Dateien, die weg sind. Optional: Cache dafuer zuruecksetzen.
+
+  GEAENDERT (orange)
+    Dateiname gleich, aber Dateigroesse unterschiedlich - der Inhalt
+    hat sich wahrscheinlich geaendert (z.B. neuer Schnitt, andere
+    Version). Vorschaubilder sind dann wahrscheinlich veraltet und
+    werden standardmaessig zum Neu-Erstellen vorausgewaehlt.
+
+Dialog-Buttons:
+    "Alle behalten"              Nichts anfassen, Dialog schliessen.
+    "Ausgewaehlte zuruecksetzen" Fuer angehakte Eintraege Cache loeschen.
+                                 Wird beim naechsten Play/Scan neu gebaut.
+
+Auch manuell zurueckgesetzte Eintraege (siehe 9d) laufen durch diesen
+Dialog - damit du die Kontrolle behaelst, WANN Vorschaubilder neu
+erstellt werden.
+
+
+9. CACHE-VERWALTUNG FUER VORSCHAUBILDER
+==============================================================================
+
+Alles was in diesem Kapitel beschrieben wird, betrifft nur die generierten
+Vorschaubilder - NIE deine Originaldateien.
+
+
+9a. WANN WIRD GELOESCHT?
+------------------------------------------------------------------------------
+
+Regel (einfach): Vorschaubilder fuer ein Medium werden aufgeraeumt,
+sobald das Medium weder in der Bibliothek vorhanden noch explizit
+per Flag geschuetzt ist.
+
+  - Medium aus Ordner geloescht + KEIN Flag   -> Cache wird geleert.
+  - Medium aus Ordner geloescht + FLAG an    -> Cache bleibt (Archiv).
+
+Die Flag ist der einzige Schutz-Schalter. Sie "gewinnt" immer gegen
+die automatische Aufraeumung.
+
+
+9b. BEHALTUNG-FLAGS (PRO MEDIUM SCHUETZEN)
+------------------------------------------------------------------------------
+
+In den Einstellungen unter "Vorschaubilder-Konfig" findest du die
+Liste aller aktuellen Medien. Jedes hat einen Schalter "Behalten":
+
+  Schalter AUS  Cache wird aufgeraeumt, wenn das Medium aus dem
+                Ordner verschwindet.
+  Schalter AN   Cache wird NIE automatisch aufgeraeumt, auch wenn
+                das Medium weg ist. Landet stattdessen im Archiv.
+
+Der Schalter aendert nichts am aktuellen Cache-Inhalt - er legt nur
+fest, was beim naechsten Scan passiert, wenn das Medium fehlt.
+
+
+9c. ARCHIV (FRUEHER VORHANDEN, NICHT MEHR DA)
+------------------------------------------------------------------------------
+
+Das Archiv zeigt Medien, die:
+  - frueher mal in der Bibliothek waren,
+  - inzwischen aus dem Ordner verschwunden sind, und
+  - einen "Behalten"-Flag haben (deshalb sind sie noch da).
+
+Pro Archiv-Eintrag gibt es:
+  - Titel des Mediums
+  - "Loeschen"-Icon -> Cache + Eintrag endgueltig entfernen.
+
+Keinen Flag-Schalter mehr (gab's frueher, war redundant): ein Eintrag
+liegt nur deshalb im Archiv, WEIL die Flag an ist. Ausschalten waere
+gleichbedeutend mit "Loeschen", und dafuer gibt's den klareren Button.
+
+Fuer partielle Resets (nur einzelne Folgen oder Staffeln) steht
+zusaetzlich die Baum-Ansicht (siehe 9d) zur Verfuegung, in der auch
+Archiv-Medien erscheinen.
+
+
+9d. CACHE EINZELN ZURUECKSETZEN (BAUM-ANSICHT)
+------------------------------------------------------------------------------
+
+Unter "Vorschaubilder-Konfig" gibt es eine Baum-Ansicht ueber alle
+Medien, die TATSAECHLICH Vorschaubilder im Cache haben. Ist fuer ein
+Medium kein Cache vorhanden, taucht es hier gar nicht erst auf - der
+Baum spiegelt den Ist-Zustand, nicht die Bibliothek.
+
+Pro Ebene ein Reset-Button:
+
+  FILM         Reset -> loescht alle Vorschaubilder dieses Films.
+  SERIE        Reset -> loescht den Cache aller Staffeln & Episoden.
+  STAFFEL      Reset -> loescht den Cache aller Episoden dieser Staffel.
+  EPISODE      Reset -> loescht nur diese eine Episode.
+
+Wichtig: Nach dem Reset werden die Bilder NICHT sofort neu erstellt.
+Stattdessen taucht der Eintrag beim naechsten "Bibliothek aktualisieren"
+im gleichen Aenderungs-Dialog wie Punkt 8 auf, damit du bewusst
+entscheidest, wann neu gebaut wird. So vermeiden wir die
+frueher ueblichen Kollisionen mit laufender Erstellung.
+
+
+9e. GESAMTEN CACHE LEEREN
+------------------------------------------------------------------------------
+
+Unter:
+    Einstellungen > Daten > "Vorschaubild-Cache leeren"
+
+Entfernt den kompletten Vorschaubild-Cache inkl. aller geflaggten
+Eintraege und des Archivs. Zeigt vorher die aktuelle Groesse an.
+Beim naechsten Scan (oder Play) werden benoetigte Bilder neu erzeugt.
+
+
+9f. BULK-AKTIONEN
+------------------------------------------------------------------------------
+
+Am Kopf der Flag-Liste gibt es zwei Buttons, die fuer alle Eintraege
+auf einmal wirken:
+
+  "Alle flaggen"
+    Setzt bei allen aktuellen Medien die Behalten-Flag auf AN. Nichts
+    geht verloren, nichts wird neu gebaut - es aendert nur das
+    zukuenftige Aufraeum-Verhalten.
+
+  "Flags entfernen & Archiv saeubern"
+    Setzt bei allen aktuellen Medien die Flag auf AUS UND loescht
+    gleichzeitig alle Archiv-Eintraege (Cache + Metadaten). Nach diesem
+    Knopfdruck ist alles wieder auf Default: nichts geschuetzt, kein
+    Archiv-Ballast.
+
+
+10. EINSTELLUNGEN IM DETAIL
+==============================================================================
+
+MEDIENBIBLIOTHEK
+    - Medien-Ordner (+ "Im Explorer oeffnen")
+    - Export-Ordner (nur sichtbar mit aktivierten Erweiterten Werkzeugen)
+    - Bibliothek aktualisieren
+
+WIEDERGABE
+    - Untertitel standardmaessig (an/aus beim Video-Start)
+    - Erweiterte Werkzeuge (Screenshot + Clip)
+    - Vorschaubilder in der Seekleiste
+
+DATEN
+    - Wiedergabeverlauf loeschen (Fortschritt/Weiterschauen komplett weg)
+    - Vorschaubild-Cache leeren (mit Groessen-Anzeige)
+
+VORSCHAUBILDER-KONFIG
+    - Bulk-Aktionen
+    - Behalten-Flags pro Medium (aktuelle Liste)
+    - Archiv-Liste (mit Loeschen pro Eintrag)
+    - Baum-Ansicht zum einzelnen Zuruecksetzen
+
+HILFE
+    - Ordner-Konvention (in-App-Uebersicht, Kurz-Version von
+      ORDNERSTRUKTUR.txt)
+
+
+11. TASTENKUERZEL (WINDOWS DESKTOP)
+==============================================================================
+
+    Leertaste       Pause / Abspielen
+    Pfeil links     10 Sekunden zurueck
+    Pfeil rechts    10 Sekunden vor
+    Pfeil hoch      Lautstaerke +5 %
+    Pfeil runter    Lautstaerke -5 %
+    C  (auch S)     Untertitel ein/aus (bzw. Spur-Auswahl)
+    A               Naechste Audio-Spur durchschalten
+    M               Stummschalten an/aus
+    F               Vollbild an/aus
+    1               Clip-Anfang markieren  (nur mit Erw. Werkzeugen)
+    2               Clip-Ende markieren + Ausschnitt speichern
+    P               Screenshot des aktuellen Frames
+    Escape          Zurueck zur Uebersicht (Position wird gespeichert)
+    Doppelklick     Pause / Abspielen
+
+
+12. TIPPS & BEKANNTE EINSCHRAENKUNGEN
+==============================================================================
+
+  - Die App beobachtet den Ordner NICHT live. Aenderungen werden erst
+    nach "Bibliothek aktualisieren" sichtbar.
+  - .mkv ist fuer Untertitel/Mehr-Audio-Spuren am zuverlaessigsten.
+  - Vorschaubild-Erstellung braucht Zeit und CPU - bei grossen Bib-
+    liotheken kann der Erst-Scan einige Minuten bis Stunden dauern.
+    Du kannst waehrenddessen ganz normal schauen.
+  - Die Flag ist der einzige Schutz gegen automatische Aufraeumung.
+    Es gibt absichtlich keinen "globalen" Behalten-Toggle mehr, weil
+    dieser die Flags nutzlos gemacht hat.
+  - Horizontale Leisten (Weiterschauen, Staffeln) unterstuetzen
+    Mausrad, Maus-Drag und Pfeil-Buttons. Die Pfeile erscheinen nur,
+    wenn tatsaechlich gescrollt werden muss - passt alles ins Bild,
+    verschwinden sie.
+
+
+==============================================================================
+                     BeefburgerStreaming v1.5.6
+                      Lokales Video-Streaming
+                  (Fragen? Siehe ORDNERSTRUKTUR.txt)
+==============================================================================
