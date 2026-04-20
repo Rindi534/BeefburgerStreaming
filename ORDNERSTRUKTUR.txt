@@ -256,5 +256,5 @@ Details zum Cache-Verhalten siehe ANLEITUNG.txt Punkt 9.
 
 ==============================================================================
                    Siehe ANLEITUNG.txt fuer Bedienung
-                     BeefburgerStreaming v1.5.6
+                     BeefburgerStreaming v1.5.7
 ==============================================================================

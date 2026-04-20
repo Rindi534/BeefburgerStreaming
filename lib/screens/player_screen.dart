@@ -1800,16 +1800,32 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// (matches Fullscreen / Next Episode) and a real tooltip string
   /// instead of the "Show menu" default.
   Widget _buildSubtitleDropdown() {
-    final activeIsReal = _subtitlesEnabled &&
-        _activeSubtitleTrack != null &&
-        _activeSubtitleTrack!.id != SubtitleTrack.no().id;
+    // "Off" means: the user toggled subs off, OR mpv reports the
+    // explicit no-subtitle sentinel, OR no track event has ever
+    // arrived. In all three cases we want the "Aus" entry checked.
+    final activeId = _activeSubtitleTrack?.id;
+    final isOff = !_subtitlesEnabled ||
+        activeId == null ||
+        activeId == SubtitleTrack.no().id;
+
+    // mpv fires the track event with id='auto' for the first pick
+    // (e.g. the default-flagged sub in an .mkv). That sentinel never
+    // equals any real track id, so comparing directly leaves every
+    // entry unchecked. Map 'auto' back to the first real track —
+    // which is exactly what mpv's default selection resolves to.
+    final activeIsReal = !isOff;
+    final effectiveActiveId = !activeIsReal
+        ? null
+        : (activeId == 'auto'
+            ? (_subtitleTracks.isNotEmpty ? _subtitleTracks.first.id : null)
+            : activeId);
 
     final entries = <_MenuEntry>[
       // "Aus" at the top — standard media-player convention, and
       // guarantees it's reachable even with a long track list.
       _MenuEntry(
         label: 'Aus',
-        selected: !activeIsReal,
+        selected: isOff,
         onTap: () async {
           await _player.setSubtitleTrack(SubtitleTrack.no());
           if (!mounted) return;
@@ -1820,7 +1836,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _MenuEntry(
           label: track.title ?? track.language ?? 'Spur ${track.id}',
           selected:
-              activeIsReal && _activeSubtitleTrack?.id == track.id,
+              effectiveActiveId != null && effectiveActiveId == track.id,
           onTap: () async {
             await _player.setSubtitleTrack(track);
             if (!mounted) return;
@@ -1847,12 +1863,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// language". No "Aus" entry because muting is the volume button's
   /// job.
   Widget _buildAudioDropdown() {
+    // Same 'auto' sentinel issue as subtitles: mpv's initial track
+    // event reports id='auto' for its default audio pick, which
+    // never matches any real track id. Fall back to the first track
+    // — mpv's default selection resolves to exactly that.
+    final activeId = _activeAudioTrack?.id;
+    final effectiveActiveId = (activeId == null || activeId == 'auto')
+        ? (_audioTracks.isNotEmpty ? _audioTracks.first.id : null)
+        : activeId;
+
     final entries = _audioTracks
         .map((track) => _MenuEntry(
               label: track.title ??
                   track.language ??
                   'Spur ${track.id}',
-              selected: _activeAudioTrack?.id == track.id,
+              selected:
+                  effectiveActiveId != null && effectiveActiveId == track.id,
               onTap: () {
                 _player.setAudioTrack(track);
                 _startHideTimer();

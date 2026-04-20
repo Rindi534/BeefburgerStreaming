@@ -477,7 +477,7 @@ HILFE
 
 
 ==============================================================================
-                     BeefburgerStreaming v1.5.6
+                     BeefburgerStreaming v1.5.7
                       Lokales Video-Streaming
                   (Fragen? Siehe ORDNERSTRUKTUR.txt)
 ==============================================================================
