@@ -39,7 +39,12 @@ jobs:
           # Channel "stable" + fester Major sorgt dafuer, dass wir nicht
           # ueber Nacht auf eine breaking Flutter-Version hochspringen.
           channel: stable
-          flutter-version: '3.24.x'
+          # Muss eine Flutter-Version sein, die Dart >= 3.11.4 mitbringt
+          # (siehe pubspec.yaml `environment.sdk: ^3.11.4`). Flutter 3.24
+          # bringt nur Dart 3.5 mit -> version solving schlaegt fehl.
+          # 3.41.7 ist die Version, die Flutter explizit als passend
+          # meldet, wenn man einen zu alten Channel hat.
+          flutter-version: '3.41.7'
           # Cache der pub + Flutter SDK Downloads beschleunigt zweite Builds.
           cache: true
 
