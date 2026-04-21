@@ -56,7 +56,12 @@ class VLCPiPCoordinator: NSObject {
     /// beherrschbar. Wenn User sich beschwert dass's ruckelt → Session 3
     /// = libvlc callbacks.
     private var captureLink: CADisplayLink?
-    private let captureFPS: Int = 10
+    // 20 Hz — hochgeschraubt nach User-Feedback "PiP ist stockig"
+    // (v1.5.22). saveVideoSnapshotAt schreibt in NSTemporaryDirectory,
+    // das ist auf iOS RAM-backed, daher nicht die erwartete Disk-Kosten.
+    // Wenn 20 fps auf älteren Geräten jankt, geht's wieder runter oder
+    // wir ziehen libvlc_video_set_callbacks direkt (Session 3b).
+    private let captureFPS: Int = 20
 
     /// Temp-Pfad für saveVideoSnapshotAt. Reusen wir pro Tick, dann
     /// bleibt der Inode stabil und der Filesystem-Cache warm.

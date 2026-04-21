@@ -127,9 +127,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _pipActiveSub?.cancel();
     _pipAvailableSub?.cancel();
 
-    // Orientation-Lock wieder aufheben — der Rest der App soll sich
-    // an der globalen Default-Config orientieren (Portrait-friendly
-    // auf iPhone, alles erlaubt auf iPad).
+    // Orientation-Lock wieder aufheben als Safety Net — der
+    // Standardpfad (X-Button) ruft _restoreOrientation vor dem pop()
+    // auf, damit der Unlock noch in diesem Frame passiert. Falls der
+    // User per iPad-Back-Geste rausgeht oder das System die Route
+    // zerreißt, greift dieser dispose-Call.
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
 
     super.dispose();
@@ -191,6 +193,21 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       if (!mounted) return;
       setState(() => _pipAvailable = avail);
     });
+  }
+
+  /// Orientation-Lock explizit aufheben. Muss VOR Navigator.pop()
+  /// laufen, nicht erst in dispose() — sonst zeigt iOS den vorherigen
+  /// Screen kurz (eine Animation lang) noch im erzwungenen Landscape
+  /// bevor dispose ankommt. dispose() hat denselben Call als Safety
+  /// Net falls der User per Back-Geste (iPad) oder OS-Kill rausgeht.
+  void _restoreOrientation() {
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+  }
+
+  void _handleClose() {
+    _saveProgress();
+    _restoreOrientation();
+    Navigator.of(context).pop();
   }
 
   Future<void> _togglePiP() async {
@@ -330,10 +347,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   Widget _buildControlsOverlay(BuildContext context) {
     return Stack(
       children: [
-        // Top-Bar: durchgehende Leiste am oberen Bildschirmrand, links
-        // Close, mittig Titel (flexibel, Ellipsis), rechts PiP. Ein
-        // gemeinsamer Gradient-Hintergrund damit's auf beliebigem
-        // Video-Content lesbar bleibt ohne bunte Kästen pro Button.
+        // Top-Bar: durchgehender Gradient als Lesbarkeits-Hintergrund,
+        // aber die Icons selbst hängen direkt am Rand (analog zu den
+        // Zeit-Labels unten). Titel ist zentriert und nimmt den Platz
+        // zwischen den beiden Icons ein.
         Positioned(
           top: 0,
           left: 0,
@@ -341,9 +358,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           child: Container(
             padding: EdgeInsets.only(
               top: MediaQuery.of(context).padding.top + 4,
-              bottom: 8,
-              left: 8,
-              right: 8,
+              bottom: 12,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -358,16 +373,24 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             child: SafeArea(
               top: false,
               bottom: false,
+              // Horizontales Padding bewusst klein (16) — entspricht
+              // dem Padding der Bottom-Bar, damit Close/PiP optisch
+              // in einer Linie mit den Zeitangaben stehen.
+              minimum: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded,
-                        color: Colors.white, size: 28),
-                    tooltip: 'Schließen',
-                    onPressed: () {
-                      _saveProgress();
-                      Navigator.of(context).pop();
-                    },
+                  // Close links, Tap-Target auf 40×40 beschränkt und
+                  // ohne Padding dass das Icon direkt am Rand sitzt.
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.close_rounded,
+                          color: Colors.white, size: 26),
+                      tooltip: 'Schließen',
+                      onPressed: _handleClose,
+                    ),
                   ),
                   Expanded(
                     child: Text(
@@ -385,19 +408,24 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                       ),
                     ),
                   ),
-                  IconButton(
-                    icon: Icon(
-                      _pipActive
-                          ? Icons.picture_in_picture_alt_rounded
-                          : Icons.picture_in_picture_rounded,
-                      color: _pipAvailable
-                          ? Colors.white
-                          : Colors.white.withValues(alpha: 0.35),
-                      size: 26,
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      icon: Icon(
+                        _pipActive
+                            ? Icons.picture_in_picture_alt_rounded
+                            : Icons.picture_in_picture_rounded,
+                        color: _pipAvailable
+                            ? Colors.white
+                            : Colors.white.withValues(alpha: 0.35),
+                        size: 24,
+                      ),
+                      tooltip:
+                          _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
+                      onPressed: _pipAvailable ? _togglePiP : null,
                     ),
-                    tooltip:
-                        _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
-                    onPressed: _pipAvailable ? _togglePiP : null,
                   ),
                 ],
               ),
@@ -405,32 +433,35 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           ),
         ),
 
-        // Zentrierter Play/Pause-Button — groß, auf Bildmitte. Touch-
-        // Target bleibt klein genug dass seitliche Taps zum Controls-
-        // Toggle durchkommen (GestureDetector liegt hinter dem Button).
+        // Zentraler Play/Pause-Button — an Windows-Player angelehnt:
+        // runder AppTheme.accent-Kreis (rot), weißes Icon. Deutlich
+        // kleiner als das vorherige 72px-Monstrum damit er nicht den
+        // halben Screen deckt.
         Center(
-          child: Material(
-            color: Colors.black.withValues(alpha: 0.35),
-            shape: const CircleBorder(),
-            child: IconButton(
-              iconSize: 72,
-              padding: const EdgeInsets.all(12),
-              icon: Icon(
+          child: GestureDetector(
+            onTap: () {
+              final c = _controller;
+              if (c == null) return;
+              if (_isPlaying) {
+                c.pause();
+              } else {
+                c.play();
+              }
+              _scheduleControlsHide();
+            },
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.accent.withValues(alpha: 0.9),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
                 _isPlaying
                     ? Icons.pause_rounded
                     : Icons.play_arrow_rounded,
                 color: Colors.white,
+                size: 40,
               ),
-              onPressed: () {
-                final c = _controller;
-                if (c == null) return;
-                if (_isPlaying) {
-                  c.pause();
-                } else {
-                  c.play();
-                }
-                _scheduleControlsHide();
-              },
             ),
           ),
         ),
