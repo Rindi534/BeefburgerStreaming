@@ -84,6 +84,23 @@ class VLCPiPCoordinator: NSObject {
         // iOS würde sonst eine weiße Fläche zeigen.
         self.displayLayer.backgroundColor = UIColor.black.cgColor
 
+        // CRITICAL: Ohne konfigurierte controlTimebase erkennt iOS die
+        // Layer NICHT als "playing video". Der PiP-Controller bleibt
+        // dann dauerhaft isPictureInPicturePossible=false, egal wieviele
+        // Frames wir enqueuen. Die Timebase verankert unsere PTS-Werte
+        // in der globalen Host-Time-Clock; Rate 1.0 signalisiert aktive
+        // Wiedergabe (0.0 = pausiert, was wir bei VLC-Pause syncen).
+        var tb: CMTimebase?
+        CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &tb)
+        if let timebase = tb {
+            CMTimebaseSetTime(timebase, time: .zero)
+            CMTimebaseSetRate(timebase, rate: 1.0)
+            self.displayLayer.controlTimebase = timebase
+        }
+
         let tmp = NSTemporaryDirectory()
         self.snapshotPath = (tmp as NSString)
             .appendingPathComponent("beefburger_vlc_pip_\(UUID().uuidString).png")
@@ -101,13 +118,26 @@ class VLCPiPCoordinator: NSObject {
         // Die Sample-Buffer-Layer muss Teil einer sichtbaren Layer-
         // Hierarchie in sinnvoller Größe sein, sonst lehnt iOS sie
         // als PiP-Quelle ab ("isPictureInPicturePossible" bleibt
-        // false). Wir legen sie vollflächig unter die VLC-Drawable-
-        // View und machen sie mit Opacity 0 unsichtbar — sichtbar
-        // wird weiterhin nur VLCs Drawable, aber iOS hat jetzt eine
-        // echte Layer mit echter Größe und echtem Content-Flow.
+        // false). WICHTIG: NICHT opacity=0 oder isHidden=true setzen —
+        // einige iOS-Versionen markieren die Layer dann als "not
+        // contributing to screen" und der PiP-Controller verweigert
+        // sich. Stattdessen blenden wir die Layer über Z-Ordering
+        // aus: VLC's drawable-UIView ist opak schwarz und deckt als
+        // Subview unsere Sample-Buffer-Layer visuell ab, aber iOS
+        // "sieht" sie trotzdem als aktive Layer.
         displayLayer.frame = hostView.bounds
-        displayLayer.opacity = 0
         hostView.layer.insertSublayer(displayLayer, at: 0)
+
+        // Layout-Sync: wenn der Container resized wird (Rotation,
+        // Splitview etc.) muss die displayLayer mitwachsen. Ohne das
+        // bleibt die Layer bei der Initial-Größe und iOS verwirft sie
+        // als PiP-Quelle sobald die Dimensionen nicht mehr matchen.
+        // Hostview ist beim Attach evtl. noch nicht gelayoutet
+        // (bounds.size.zero) — async dispatchen und nochmal syncen.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let host = self.hostView else { return }
+            self.displayLayer.frame = host.bounds
+        }
 
         // AVAudioSession muss .playback sein damit PiP und
         // Background-Audio überhaupt erlaubt werden. NativePlayerPlugin
@@ -151,7 +181,10 @@ class VLCPiPCoordinator: NSObject {
             \.isPictureInPicturePossible,
             options: [.initial, .new]
         ) { [weak self] controller, _ in
-            self?.onPiPAvailabilityChanged?(controller.isPictureInPicturePossible)
+            let possible = controller.isPictureInPicturePossible
+            NSLog("[VLCPiP] isPictureInPicturePossible → \(possible) "
+                + "(supported=\(AVPictureInPictureController.isPictureInPictureSupported()))")
+            self?.onPiPAvailabilityChanged?(possible)
         }
 
         // Capture sofort starten — für Auto-PiP muss der Frame-Flow
@@ -226,14 +259,31 @@ class VLCPiPCoordinator: NSObject {
     }
 
     @objc private func tick() {
+        syncTimebaseToPlayer()
         captureOneFrame()
+    }
+
+    /// Hält die displayLayer.controlTimebase synchron mit VLCs
+    /// aktueller Wiedergabeposition und Play-State. Ohne das driftet
+    /// der PiP-Scrubber gegen die tatsächliche VLC-Zeit, und pause/play
+    /// wird vom System-PiP-UI nicht als Zustandsänderung erkannt.
+    private func syncTimebaseToPlayer() {
+        guard let tb = displayLayer.controlTimebase,
+              let player = mediaPlayer else { return }
+        let playerMs = player.time.intValue
+        let target = CMTime(value: CMTimeValue(max(0, playerMs)), timescale: 1000)
+        CMTimebaseSetTime(tb, time: target)
+        CMTimebaseSetRate(tb, rate: player.isPlaying ? 1.0 : 0.0)
     }
 
     private func captureOneFrame() {
         guard let player = mediaPlayer else { return }
-        guard player.isPlaying || pipController?.isPictureInPictureActive == true else {
-            return
-        }
+        // Nicht mehr auf isPlaying gaten. Auch im Paused-State wollen
+        // wir den zuletzt gezeigten Frame in die Layer pushen —
+        // erstens damit der PiP-Controller überhaupt in den "possible"
+        // Zustand kommt (braucht aktive Frame-Zustellung), zweitens
+        // damit das eingefrorene PiP-Bild bei Pause ein echter Frame
+        // ist und nicht schwarz.
         if snapshotInFlight { return }
         snapshotInFlight = true
 
@@ -317,10 +367,18 @@ class VLCPiPCoordinator: NSObject {
             formatDescriptionOut: &formatDescription)
         guard let formatDesc = formatDescription else { return nil }
 
-        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        // PTS aus der VLC-Player-Position ableiten, nicht aus HostTime.
+        // iOS matcht die Frames gegen displayLayer.controlTimebase;
+        // mit einer Timebase, die mit Rate 1.0 ab 0 läuft, müssen die
+        // PTS in derselben Timeline liegen. VLC liefert Position in
+        // ms — konvertieren + auf aktuellem Stand halten.
+        let playerMs = mediaPlayer?.time.intValue ?? 0
+        let pts = CMTime(
+            value: CMTimeValue(max(0, playerMs)),
+            timescale: 1000)
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(captureFPS)),
-            presentationTimeStamp: now,
+            presentationTimeStamp: pts,
             decodeTimeStamp: .invalid)
 
         var sample: CMSampleBuffer?
@@ -363,22 +421,30 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         }
     }
 
-    /// PiP-Overlay braucht die Media-Länge um den Scrubber korrekt zu
-    /// zeichnen. Live-Stream = .invalid. Wir haben immer Finite-Länge
-    /// weil's lokale Dateien sind.
+    /// VOD-Semantik: der verfügbare Content geht von 0 bis Dauer.
+    /// NICHT (negativeInfinity, positiveInfinity) zurückgeben — das
+    /// wäre Live-Stream-Semantik und iOS malt dann keinen Scrubber
+    /// und markiert PiP auf manchen Geräten als unavailable.
+    /// NICHT (now-elapsed, duration) — das ist quasi-Live-Semantik
+    /// und wurde in Version 1.5.14 getestet, iOS lehnte es ab.
     func pictureInPictureControllerTimeRangeForPlayback(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
         guard let player = mediaPlayer,
-              let lenMs = player.media?.length.intValue else {
-            return CMTimeRange(start: .negativeInfinity, duration: .positiveInfinity)
+              let lenMs = player.media?.length.intValue,
+              lenMs > 0 else {
+            // Bevor die Media-Länge bekannt ist (erster Playing-State
+            // von VLC), geben wir einen Placeholder zurück damit iOS
+            // den Controller nicht sofort verwirft. Sobald die Länge
+            // reinkommt, wird der Wert beim nächsten Aufruf korrekt.
+            return CMTimeRange(
+                start: .zero,
+                duration: CMTime(seconds: 3600, preferredTimescale: 1000))
         }
-        let duration = CMTime(seconds: Double(lenMs) / 1000.0, preferredTimescale: 1000)
-        let now = CMClockGetTime(CMClockGetHostTimeClock())
-        let start = CMTimeSubtract(
-            now,
-            CMTime(seconds: Double(player.time.intValue) / 1000.0, preferredTimescale: 1000))
-        return CMTimeRange(start: start, duration: duration)
+        return CMTimeRange(
+            start: .zero,
+            duration: CMTime(seconds: Double(lenMs) / 1000.0,
+                             preferredTimescale: 1000))
     }
 
     func pictureInPictureControllerIsPlaybackPaused(
