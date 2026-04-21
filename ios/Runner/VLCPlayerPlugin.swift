@@ -127,16 +127,12 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.videoView.autoresizingMask =
             [.flexibleWidth, .flexibleHeight]
 
-        // KILL-SWITCH: PiP-Coordinator temporär abgeschaltet nachdem
-        // v1.5.15/v1.5.16 beim Playback crashten. Wir brauchen erstmal
-        // eine stabile Baseline (Wiedergabe funktioniert), dann bauen
-        // wir PiP in kleinen kontrollierten Schritten zurück. Wenn
-        // diese Version WIEDER crasht, wissen wir dass der Crash NICHT
-        // am Coordinator liegt sondern an etwas anderem in v1.5.15+
-        // — dann suchen wir tiefer.
-        //
-        // Zum Reaktivieren: flag auf true setzen.
-        let enablePiP = false
+        // v1.5.18+48: PiP-Coordinator wieder an, nachdem der
+        // NSException-Crash aus v1.5.15/16 über den Obj-C-Wrapper
+        // VLCSafeSaveSnapshot + den hasVideoOut-Gate in
+        // VLCPiPCoordinator.captureOneFrame entschärft wurde.
+        // Siehe Crash-Report Runner 865BAEB7 (v1.5.16).
+        let enablePiP = true
         if enablePiP, #available(iOS 15.0, *) {
             let coord = VLCPiPCoordinator()
             coord.attach(to: self.mediaPlayer, hostView: self.container)

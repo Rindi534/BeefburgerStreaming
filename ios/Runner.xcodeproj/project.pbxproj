@@ -15,6 +15,7 @@
 		A1B2C3D4E5F60000000000AB /* NativePlayerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000000000AA /* NativePlayerPlugin.swift */; };
 		A1B2C3D4E5F60000000000BB /* VLCPlayerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000000000BA /* VLCPlayerPlugin.swift */; };
 		A1B2C3D4E5F60000000000BD /* VLCPiPCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000000000BC /* VLCPiPCoordinator.swift */; };
+		A1B2C3D4E5F60000000000BF /* VLCSafeSnapshot.m in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000000000BE /* VLCSafeSnapshot.m */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
@@ -55,6 +56,8 @@
 		A1B2C3D4E5F60000000000AA /* NativePlayerPlugin.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NativePlayerPlugin.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60000000000BA /* VLCPlayerPlugin.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VLCPlayerPlugin.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60000000000BC /* VLCPiPCoordinator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VLCPiPCoordinator.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60000000000BE /* VLCSafeSnapshot.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = VLCSafeSnapshot.m; sourceTree = "<group>"; };
+		A1B2C3D4E5F60000000000C0 /* VLCSafeSnapshot.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VLCSafeSnapshot.h; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
 		9740EEB31CF90195004384FC /* Generated.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Generated.xcconfig; path = Flutter/Generated.xcconfig; sourceTree = "<group>"; };
@@ -128,6 +131,8 @@
 				A1B2C3D4E5F60000000000AA /* NativePlayerPlugin.swift */,
 				A1B2C3D4E5F60000000000BA /* VLCPlayerPlugin.swift */,
 				A1B2C3D4E5F60000000000BC /* VLCPiPCoordinator.swift */,
+				A1B2C3D4E5F60000000000C0 /* VLCSafeSnapshot.h */,
+				A1B2C3D4E5F60000000000BE /* VLCSafeSnapshot.m */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 			);
 			path = Runner;
@@ -286,6 +291,7 @@
 				A1B2C3D4E5F60000000000AB /* NativePlayerPlugin.swift in Sources */,
 				A1B2C3D4E5F60000000000BB /* VLCPlayerPlugin.swift in Sources */,
 				A1B2C3D4E5F60000000000BD /* VLCPiPCoordinator.swift in Sources */,
+				A1B2C3D4E5F60000000000BF /* VLCSafeSnapshot.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -320,6 +320,15 @@ class VLCPiPCoordinator: NSObject {
         default:
             return
         }
+        // KRITISCHER Gate: VLCMediaPlayer.saveVideoSnapshotAt wirft eine
+        // NSException wenn der Video-Output noch nicht initialisiert ist —
+        // selbst im .playing-State ist das die ersten paar Frames oft
+        // noch der Fall (Audio läuft schon, Video-Pipeline nicht).
+        // Swift kann NSException nicht fangen → SIGABRT, App stirbt.
+        // hasVideoOut wird von VLCKit auf true gesetzt sobald der
+        // libvlc video_output aktiv ist. Das ist der einzige zuverlässige
+        // Ready-Indikator. Siehe Crash-Report v1.5.16 (Runner 865BAEB7).
+        guard player.hasVideoOut else { return }
         if snapshotInFlight { return }
         snapshotInFlight = true
 
@@ -328,19 +337,13 @@ class VLCPiPCoordinator: NSObject {
         let width: Int32 = 480
         let height: Int32 = 270
 
-        // saveVideoSnapshotAt ist blocking und schreibt synchron zum
-        // aktuellen Thread — der CADisplayLink läuft auf Main, also
-        // tritt hier theoretisch ein Jank-Risiko auf. In der Praxis bei
-        // 10 Hz und 480p auf Main ist das unter 5ms pro Snapshot. Wenn
-        // wir später Probleme sehen, verlegen wir den Write auf ein
-        // dispatch_queue — aber dann muss lastSnapshot cross-thread
-        // gelesen werden, das ist nicht garantiert safe.
-        player.saveVideoSnapshot(
-            at: snapshotPath,
-            withWidth: width,
-            andHeight: height)
-
-        guard let image = player.lastSnapshot else {
+        // Aufruf geht über den Obj-C-Wrapper VLCSafeSaveSnapshot, der
+        // intern @try/@catch macht. Das ist der Safety-Net falls
+        // hasVideoOut lügt (race condition: Output wird zwischen Gate
+        // und Call wieder abgerissen). Rückgabe NO = keine Exception,
+        // aber auch kein Frame → snapshotInFlight zurücksetzen und raus.
+        let ok = VLCSafeSaveSnapshot(player, snapshotPath, width, height)
+        guard ok, let image = player.lastSnapshot else {
             snapshotInFlight = false
             return
         }
