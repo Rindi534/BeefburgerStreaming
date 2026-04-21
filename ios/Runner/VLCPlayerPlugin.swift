@@ -127,12 +127,17 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.videoView.autoresizingMask =
             [.flexibleWidth, .flexibleHeight]
 
-        // PiP-Koordinator attachen (iOS 15+). Die Sample-Buffer-Layer
-        // wird in den Container gehängt, nicht in die VLC-Drawable-View
-        // — VLCKit könnte sonst die Sublayers beim OpenGL-Resize kaputt
-        // machen. Die Layer ist sichtbar aber 1×1 Pixel + Opacity 0,
-        // damit iOS sie in der Hierarchie findet (PiP verlangt das).
-        if #available(iOS 15.0, *) {
+        // KILL-SWITCH: PiP-Coordinator temporär abgeschaltet nachdem
+        // v1.5.15/v1.5.16 beim Playback crashten. Wir brauchen erstmal
+        // eine stabile Baseline (Wiedergabe funktioniert), dann bauen
+        // wir PiP in kleinen kontrollierten Schritten zurück. Wenn
+        // diese Version WIEDER crasht, wissen wir dass der Crash NICHT
+        // am Coordinator liegt sondern an etwas anderem in v1.5.15+
+        // — dann suchen wir tiefer.
+        //
+        // Zum Reaktivieren: flag auf true setzen.
+        let enablePiP = false
+        if enablePiP, #available(iOS 15.0, *) {
             let coord = VLCPiPCoordinator()
             coord.attach(to: self.mediaPlayer, hostView: self.container)
             coord.onPiPStateChanged = { [weak self] active in
@@ -148,6 +153,15 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                 ])
             }
             self.pipCoordinator = coord
+        } else {
+            // Kein PiP verfügbar → Dart-Seite proaktiv informieren,
+            // sonst wartet der UI-Layer ewig auf ein pipAvailability-
+            // Event und der Button bleibt grau (was akzeptabel ist,
+            // aber so ist's explizit).
+            self.eventSink.send([
+                "event": "pipAvailability",
+                "value": false,
+            ])
         }
 
         // Optional: Initial-Media in creationParams. Anders als beim
