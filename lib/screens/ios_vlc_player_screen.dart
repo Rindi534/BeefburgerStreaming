@@ -17,6 +17,7 @@
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/episode.dart';
 import '../providers/watch_progress_provider.dart';
@@ -100,6 +101,16 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _currentMediaId = widget.mediaId;
     _currentSubtitlePath = widget.subtitlePath;
     _currentEpisodeIndex = widget.currentEpisodeIndex;
+
+    // Landscape-only solange der Player offen ist. iOS akzeptiert
+    // landscapeLeft+Right nebeneinander, dann bleibt die Orientation
+    // der Tatsachen-Seitenlage des Geräts erhalten (Kabel links oder
+    // rechts) statt einer fix forcierten. Restore in dispose().
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+
     _scheduleControlsHide();
   }
 
@@ -115,6 +126,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _durationSub?.cancel();
     _pipActiveSub?.cancel();
     _pipAvailableSub?.cancel();
+
+    // Orientation-Lock wieder aufheben — der Rest der App soll sich
+    // an der globalen Default-Config orientieren (Portrait-friendly
+    // auf iPhone, alles erlaubt auf iPad).
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+
     super.dispose();
   }
 
@@ -313,77 +330,114 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   Widget _buildControlsOverlay(BuildContext context) {
     return Stack(
       children: [
-        // Close-Button oben links, auf halbtransparentem Hintergrund
-        // für Lesbarkeit über beliebigem Videocontent.
+        // Top-Bar: durchgehende Leiste am oberen Bildschirmrand, links
+        // Close, mittig Titel (flexibel, Ellipsis), rechts PiP. Ein
+        // gemeinsamer Gradient-Hintergrund damit's auf beliebigem
+        // Video-Content lesbar bleibt ohne bunte Kästen pro Button.
         Positioned(
-          top: MediaQuery.of(context).padding.top + 8,
-          left: 8,
-          child: SafeArea(
-            child: Material(
-              color: Colors.black.withValues(alpha: 0.4),
-              borderRadius: BorderRadius.circular(22),
-              child: IconButton(
-                icon: const Icon(Icons.close_rounded, color: Colors.white),
-                tooltip: 'Schließen',
-                onPressed: () {
-                  _saveProgress();
-                  Navigator.of(context).pop();
-                },
+          top: 0,
+          left: 0,
+          right: 0,
+          child: Container(
+            padding: EdgeInsets.only(
+              top: MediaQuery.of(context).padding.top + 4,
+              bottom: 8,
+              left: 8,
+              right: 8,
+            ),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.black.withValues(alpha: 0.75),
+                ],
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              bottom: false,
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded,
+                        color: Colors.white, size: 28),
+                    tooltip: 'Schließen',
+                    onPressed: () {
+                      _saveProgress();
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  Expanded(
+                    child: Text(
+                      _currentEpisodeTitle ?? widget.title,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        shadows: [
+                          Shadow(color: Colors.black, blurRadius: 4),
+                        ],
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      _pipActive
+                          ? Icons.picture_in_picture_alt_rounded
+                          : Icons.picture_in_picture_rounded,
+                      color: _pipAvailable
+                          ? Colors.white
+                          : Colors.white.withValues(alpha: 0.35),
+                      size: 26,
+                    ),
+                    tooltip:
+                        _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
+                    onPressed: _pipAvailable ? _togglePiP : null,
+                  ),
+                ],
               ),
             ),
           ),
         ),
 
-        // PiP-Button oben rechts — Spiegel zum Close-Button. Wird nur
-        // enabled wenn iOS uns signalisiert dass PiP bereit ist (Audio-
-        // Session steht, Sample-Buffer-Layer ist mounted). Solange VLC
-        // noch nicht den ersten Frame geliefert hat, bleibt der Button
-        // ausgegraut.
-        Positioned(
-          top: MediaQuery.of(context).padding.top + 8,
-          right: 8,
-          child: SafeArea(
-            child: Material(
-              color: Colors.black.withValues(alpha: 0.4),
-              borderRadius: BorderRadius.circular(22),
-              child: IconButton(
-                icon: Icon(
-                  _pipActive
-                      ? Icons.picture_in_picture_alt_rounded
-                      : Icons.picture_in_picture_rounded,
-                  color: _pipAvailable
-                      ? Colors.white
-                      : Colors.white.withValues(alpha: 0.35),
-                ),
-                tooltip: _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
-                onPressed: _pipAvailable ? _togglePiP : null,
+        // Zentrierter Play/Pause-Button — groß, auf Bildmitte. Touch-
+        // Target bleibt klein genug dass seitliche Taps zum Controls-
+        // Toggle durchkommen (GestureDetector liegt hinter dem Button).
+        Center(
+          child: Material(
+            color: Colors.black.withValues(alpha: 0.35),
+            shape: const CircleBorder(),
+            child: IconButton(
+              iconSize: 72,
+              padding: const EdgeInsets.all(12),
+              icon: Icon(
+                _isPlaying
+                    ? Icons.pause_rounded
+                    : Icons.play_arrow_rounded,
+                color: Colors.white,
               ),
+              onPressed: () {
+                final c = _controller;
+                if (c == null) return;
+                if (_isPlaying) {
+                  c.pause();
+                } else {
+                  c.play();
+                }
+                _scheduleControlsHide();
+              },
             ),
           ),
         ),
 
-        // Titel-Zeile oben mittig — hilft zu erkennen was gerade läuft
-        // (vor allem nach einem Auto-Next).
-        Positioned(
-          top: MediaQuery.of(context).padding.top + 14,
-          left: 72,
-          right: 72,
-          child: Text(
-            _currentEpisodeTitle ?? widget.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              shadows: [
-                Shadow(color: Colors.black, blurRadius: 4),
-              ],
-            ),
-          ),
-        ),
-
-        // Unteres Control-Panel: Play/Pause + Scrubber.
+        // Bottom-Bar: Progress + Zeitangaben. Play/Pause ist bewusst
+        // NICHT mehr hier drin — wandert in die Mitte (Netflix/Apple TV
+        // Layout). Nur noch Slider und Timestamps.
         Positioned(
           left: 0,
           right: 0,
@@ -392,8 +446,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             padding: EdgeInsets.only(
               left: 16,
               right: 16,
-              top: 16,
-              bottom: MediaQuery.of(context).padding.bottom + 12,
+              top: 24,
+              bottom: MediaQuery.of(context).padding.bottom + 8,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -405,78 +459,59 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 ],
               ),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+            child: Row(
               children: [
-                Row(
-                  children: [
-                    Text(
-                      _formatDuration(_position),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                Text(
+                  _formatDuration(_position),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(
+                        enabledThumbRadius: 7,
+                      ),
+                      overlayShape: const RoundSliderOverlayShape(
+                        overlayRadius: 16,
                       ),
                     ),
-                    Expanded(
-                      child: Slider(
-                        value: _sliderValue(),
-                        onChanged: (v) {
-                          if (_duration.inMilliseconds <= 0) return;
-                          setState(() {
-                            _position = Duration(
-                              milliseconds:
-                                  (v * _duration.inMilliseconds).round(),
-                            );
-                          });
-                        },
-                        onChangeEnd: (v) {
-                          if (_duration.inMilliseconds <= 0) return;
-                          final target = Duration(
+                    child: Slider(
+                      value: _sliderValue(),
+                      onChanged: (v) {
+                        if (_duration.inMilliseconds <= 0) return;
+                        setState(() {
+                          _position = Duration(
                             milliseconds:
                                 (v * _duration.inMilliseconds).round(),
                           );
-                          _controller?.seek(target);
-                          _scheduleControlsHide();
-                        },
-                        activeColor: AppTheme.accent,
-                        inactiveColor: Colors.white24,
-                      ),
-                    ),
-                    Text(
-                      _formatDuration(_duration),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    IconButton(
-                      iconSize: 48,
-                      icon: Icon(
-                        _isPlaying
-                            ? Icons.pause_circle_filled_rounded
-                            : Icons.play_circle_fill_rounded,
-                        color: Colors.white,
-                      ),
-                      onPressed: () {
-                        final c = _controller;
-                        if (c == null) return;
-                        if (_isPlaying) {
-                          c.pause();
-                        } else {
-                          c.play();
-                        }
+                        });
+                      },
+                      onChangeEnd: (v) {
+                        if (_duration.inMilliseconds <= 0) return;
+                        final target = Duration(
+                          milliseconds:
+                              (v * _duration.inMilliseconds).round(),
+                        );
+                        _controller?.seek(target);
                         _scheduleControlsHide();
                       },
+                      activeColor: AppTheme.accent,
+                      inactiveColor: Colors.white24,
                     ),
-                  ],
+                  ),
+                ),
+                Text(
+                  _formatDuration(_duration),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
                 ),
               ],
             ),
