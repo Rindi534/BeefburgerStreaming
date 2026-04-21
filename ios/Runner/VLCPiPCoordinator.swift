@@ -374,10 +374,31 @@ class VLCPiPCoordinator: NSObject {
         if snapshotInFlight { return }
         snapshotInFlight = true
 
-        // Snapshot-Size: PiP-Window ist klein (meist 320×180-ish), wir
-        // rendern mit 480p um die Konvertier-Kosten niedrig zu halten.
-        let width: Int32 = 480
-        let height: Int32 = 270
+        // Snapshot-Size: PiP-Window ist klein, wir rendern mit längster
+        // Kante 480 um die Konvertier-Kosten niedrig zu halten.
+        // WICHTIG: Seitenverhältnis aus player.videoSize ableiten —
+        // saveVideoSnapshotAt:withWidth:andHeight: skaliert stur auf
+        // die angefragten Dimensionen, d.h. fixe 480×270 verzerren
+        // alles was nicht 16:9 ist (4:3-Serien, 2.35:1-Filme, ...).
+        // resizeAspect auf der displayLayer hilft dann nicht mehr,
+        // weil die Verzerrung schon im Pixel-Buffer drin ist.
+        let videoSize = player.videoSize
+        let (width, height): (Int32, Int32)
+        if videoSize.width > 0 && videoSize.height > 0 {
+            let maxEdge: CGFloat = 480
+            let aspect = videoSize.width / videoSize.height
+            if aspect >= 1 {
+                width = Int32(maxEdge)
+                height = Int32((maxEdge / aspect).rounded())
+            } else {
+                height = Int32(maxEdge)
+                width = Int32((maxEdge * aspect).rounded())
+            }
+        } else {
+            // videoSize noch nicht verfügbar (erste Frames) → 16:9 Fallback.
+            width = 480
+            height = 270
+        }
 
         // Aufruf geht über den Obj-C-Wrapper VLCSafeSaveSnapshot, der
         // intern @try/@catch macht. Das ist der Safety-Net falls
