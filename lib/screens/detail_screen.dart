@@ -291,12 +291,30 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
   Widget _buildPlayButton(WidgetRef ref) {
     final continueInfo = _findContinueWatchingEpisode(ref);
 
+    // Narrow-screen breakpoint. Below this we drop the "Weiterschauen"
+    // word and only show "▶ Folge X". Above it we keep the full
+    // label because there's room. The old behavior — full label at
+    // ANY width — was wrapping the ElevatedButton.icon text across 2–3
+    // lines on iPhone, making the button tall enough that subsequent
+    // slivers (season selector, episode list) got pushed below a
+    // layout overflow and never rendered. That's why the user reported
+    // "no tabs, no episodes — but only when Weiterschauen is there".
+    final narrow = MediaQuery.of(context).size.width < 500;
+
     if (continueInfo != null) {
       final (episode, _) = continueInfo;
+      final label = narrow
+          // iPhone: compact label, one line, ellipsis if still too long.
+          ? episode.fullDisplayName
+          : 'Weiterschauen · ${episode.fullDisplayName}';
       return ElevatedButton.icon(
         onPressed: () => _playEpisode(episode),
         icon: const Icon(Icons.play_arrow_rounded, size: 24),
-        label: Text('Weiterschauen · ${episode.fullDisplayName}'),
+        label: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         style: ElevatedButton.styleFrom(
           backgroundColor: AppTheme.accent,
           foregroundColor: Colors.white,
@@ -316,7 +334,11 @@ class _DetailScreenState extends ConsumerState<DetailScreen> {
     return ElevatedButton.icon(
       onPressed: () => _playFromBeginning(),
       icon: const Icon(Icons.play_arrow_rounded, size: 24),
-      label: const Text('Abspielen'),
+      label: const Text(
+        'Abspielen',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       style: ElevatedButton.styleFrom(
         backgroundColor: AppTheme.accent,
         foregroundColor: Colors.white,

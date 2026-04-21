@@ -213,6 +213,19 @@ class NativePlayerView: NSObject, FlutterPlatformView {
             return
         }
 
+        // Invalidate any observers bound to the previous AVPlayerItem.
+        // loadMedia can now be re-entered via the "replaceMedia" method
+        // (used for seamless next-episode transitions during PiP), so
+        // the status observer from the previous item must go or it
+        // would keep firing duration/track events for stale content.
+        statusObservation?.invalidate()
+        statusObservation = nil
+        if let obs = endObserver {
+            NotificationCenter.default.removeObserver(obs)
+            endObserver = nil
+        }
+        pendingSubtitleUrl = nil
+
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
         player.replaceCurrentItem(with: item)
@@ -251,6 +264,14 @@ class NativePlayerView: NSObject, FlutterPlatformView {
                                      toleranceBefore: .zero,
                                      toleranceAfter: .zero)
                 }
+
+                // Auto-play as soon as the asset is ready. Without this
+                // call AVPlayer loads the item into "paused at frame 0"
+                // state and the user has to tap the system play button —
+                // which feels broken after coming from the home screen
+                // or the "auto-next episode" transition. Calling play()
+                // here mirrors media_kit's default autoplay on Windows.
+                self.player.play()
             } else if pi.status == .failed {
                 let msg = pi.error?.localizedDescription
                     ?? "Unbekannter Wiedergabe-Fehler"
@@ -421,6 +442,29 @@ class NativePlayerView: NSObject, FlutterPlatformView {
                let r = args["rate"] as? Double {
                 player.rate = Float(r)
             }
+            result(nil)
+        case "replaceMedia":
+            // In-place media swap — critical for Picture-in-Picture.
+            // If we destroyed the AVPlayerViewController and rebuilt
+            // one for the next episode, iOS would tear down the PiP
+            // window along with it. Instead we keep the same player
+            // instance and reuse loadMedia() which already handles
+            // the readyToPlay observer, end-notification rebinding,
+            // external subtitle reset, and auto-play. Result: the
+            // floating PiP window stays open and transitions straight
+            // into the next episode, Netflix-style.
+            guard let args = call.arguments as? [String: Any],
+                  let media = args["mediaUrl"] as? String else {
+                result(FlutterError(code: "bad_args",
+                                    message: "replaceMedia needs mediaUrl",
+                                    details: nil))
+                return
+            }
+            let sub = args["subtitleUrl"] as? String
+            let start = (args["startSeconds"] as? Double) ?? 0
+            loadMedia(urlString: media,
+                      subtitleUrl: sub,
+                      startSeconds: start)
             result(nil)
         case "dispose":
             player.pause()

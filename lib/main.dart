@@ -49,6 +49,46 @@ Future<bool> _acquireSingleInstanceLock() async {
 // ignore: unused_field
 RandomAccessFile? _lockHandle;
 
+/// iOS-only: moves any existing Hive files from the app's Documents
+/// directory to the Support directory [dest]. No-op if no files need
+/// moving (fresh install or already migrated).
+///
+/// The three box names below are hard-coded to match what `main()`
+/// opens — both the data (`.hive`) and lock (`.lock`) files. We fail
+/// silently per-file: losing a `.lock` sidecar is harmless (Hive
+/// recreates it), and losing a data file falls through to the usual
+/// corruption-recovery path in `_openBoxSafely`.
+Future<void> _migrateHiveFromDocumentsIfNeeded(String dest) async {
+  try {
+    final docs = await getApplicationDocumentsDirectory();
+    // Don't copy onto ourselves — older Flutter versions or weirdly
+    // symlinked sandboxes could theoretically have Documents == Support.
+    if (p.equals(docs.path, dest)) return;
+
+    const boxes = ['settings', 'watch_progress', 'media_history'];
+    for (final name in boxes) {
+      for (final ext in ['hive', 'lock']) {
+        final src = File(p.join(docs.path, '$name.$ext'));
+        final target = File(p.join(dest, '$name.$ext'));
+        if (await src.exists() && !await target.exists()) {
+          try {
+            await src.rename(target.path);
+          } catch (_) {
+            // Cross-filesystem? Fall back to copy + delete.
+            try {
+              await src.copy(target.path);
+              await src.delete();
+            } catch (_) {/* give up silently, see doc above */}
+          }
+        }
+      }
+    }
+  } catch (_) {
+    // Any top-level failure is non-fatal — a fresh Hive in Support is
+    // the correct fallback.
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
@@ -72,7 +112,29 @@ void main() async {
 
   // Initialize Hive — with corruption recovery so a bad shutdown can't brick
   // the app on next start.
-  await Hive.initFlutter();
+  //
+  // On iOS Hive.initFlutter() defaults to the app's Documents directory,
+  // which is the SAME place our iOS folder picker hands users as their
+  // "media folder" (Documents is the only writable spot visible via the
+  // Files app on iPhone/iPad). The result: users dropping media into
+  // their Files folder saw `settings.hive`, `watch_progress.hive`,
+  // `*.lock` etc. littered alongside their videos.
+  //
+  // Fix: point Hive at the app's *Support* directory on iOS. That
+  // directory is in the same sandbox, persistent, automatically
+  // backed up by iCloud, but invisible in the Files app — exactly
+  // what we want for internal state.
+  //
+  // One-time migration: if any .hive files exist in Documents from
+  // earlier builds, move them over so the user doesn't lose watch
+  // progress on upgrade.
+  if (Platform.isIOS) {
+    final supportDir = await getApplicationSupportDirectory();
+    await _migrateHiveFromDocumentsIfNeeded(supportDir.path);
+    Hive.init(supportDir.path);
+  } else {
+    await Hive.initFlutter();
+  }
   Hive.registerAdapter(WatchProgressAdapter());
   Hive.registerAdapter(MediaMetadataAdapter());
   await _openBoxSafely<dynamic>('settings');

@@ -175,6 +175,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     MediaLibraryState library,
     List<WatchProgress> continueWatching,
   ) {
+    // Phone-portrait breakpoint. Below this the logo + wide search +
+    // two icon buttons overflow horizontally; we split them into two
+    // rows: compact header (smaller logo + action icons) on top, full-
+    // width search bar in the AppBar's `bottom` slot underneath.
+    final narrow = MediaQuery.of(context).size.width < 500;
+
     return CustomScrollView(
       slivers: [
         // App Bar
@@ -182,41 +188,60 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           floating: true,
           // Taller toolbar so the larger logo has breathing room and the
           // action icons scale up proportionally without looking cramped.
-          toolbarHeight: 78,
-          titleSpacing: 20,
-          // Logo + global search field. The search-field is Expanded so
-          // it eats whatever width is left between the logo and the
-          // action buttons on the right. On narrow windows the field
-          // simply shrinks — it never wraps or pushes other widgets.
-          title: Row(
-            children: [
-              Image.asset(
-                'assets/images/logo_wide.png',
-                height: 58,
-                fit: BoxFit.contain,
-              ),
-              const SizedBox(width: 24),
-              const Expanded(child: GlobalSearchField()),
-              const SizedBox(width: 16),
-            ],
-          ),
+          // On narrow phones we shrink to avoid eating half the screen.
+          toolbarHeight: narrow ? 60 : 78,
+          titleSpacing: narrow ? 12 : 20,
+          // Logo + global search field. On wide screens both live in one
+          // row (search Expanded between logo and actions). On narrow
+          // phones the search moves into `bottom:` so the top row has
+          // breathing room for logo + the two action icons.
+          title: narrow
+              ? Image.asset(
+                  'assets/images/logo_wide.png',
+                  height: 38,
+                  fit: BoxFit.contain,
+                )
+              : Row(
+                  children: [
+                    Image.asset(
+                      'assets/images/logo_wide.png',
+                      height: 58,
+                      fit: BoxFit.contain,
+                    ),
+                    const SizedBox(width: 24),
+                    const Expanded(child: GlobalSearchField()),
+                    const SizedBox(width: 16),
+                  ],
+                ),
           actions: [
             IconButton(
-              icon: const Icon(Icons.refresh_rounded, size: 28),
+              icon: Icon(Icons.refresh_rounded, size: narrow ? 24 : 28),
               onPressed: () =>
                   ref.read(mediaLibraryProvider.notifier).refresh(),
               tooltip: 'Bibliothek aktualisieren',
             ),
             IconButton(
-              icon: const Icon(Icons.settings_rounded, size: 28),
+              icon: Icon(Icons.settings_rounded, size: narrow ? 24 : 28),
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const SettingsScreen()),
               ),
               tooltip: 'Einstellungen',
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: narrow ? 6 : 12),
           ],
+          // Second row: full-width search on narrow phones. Null on
+          // desktop/tablet — the search lives inline in `title`.
+          bottom: narrow
+              ? PreferredSize(
+                  preferredSize: const Size.fromHeight(56),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: const GlobalSearchField(),
+                  ),
+                )
+              : null,
         ),
 
         // Thumbnail generation progress banner

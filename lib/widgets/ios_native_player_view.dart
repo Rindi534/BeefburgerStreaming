@@ -96,6 +96,32 @@ class IOSNativePlayerController {
   Future<void> setRate(double r) =>
       _methods.invokeMethod('setRate', {'rate': r});
 
+  /// Swap the media URL on the same AVPlayer instance without
+  /// destroying the underlying UIViewController. Critical for
+  /// Picture-in-Picture: tearing down the view controller to "navigate"
+  /// to the next episode would close the PiP window. This method
+  /// reuses the live player so the PiP window transitions straight
+  /// into the next episode Netflix-style.
+  ///
+  /// Resets mirrored state so Dart callers see a fresh 0-position
+  /// immediately, rather than briefly flashing the previous episode's
+  /// position until the first native "position" event lands.
+  Future<void> replaceMedia({
+    required String filePath,
+    String? subtitlePath,
+    Duration startPosition = Duration.zero,
+  }) async {
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _completed = false;
+    _lastError = null;
+    await _methods.invokeMethod('replaceMedia', {
+      'mediaUrl': filePath,
+      if (subtitlePath != null) 'subtitleUrl': subtitlePath,
+      'startSeconds': startPosition.inMilliseconds / 1000.0,
+    });
+  }
+
   Future<void> dispose() async {
     try {
       await _methods.invokeMethod('dispose');
