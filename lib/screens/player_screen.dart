@@ -55,9 +55,24 @@ class PlayerScreen extends StatelessWidget {
     this.currentEpisodeIndex,
   });
 
+  /// File extensions that AVPlayer (iOS system player) cannot decode
+  /// natively. For these we fall back to the media_kit/libmpv-based
+  /// desktop player on iOS — users lose PiP + AirPlay for those files
+  /// but at least they play at all. MP4/MOV/M4V keep going through the
+  /// native path so the PiP story stays intact for well-behaved files.
+  static const _avPlayerUnsupported = {'.mkv', '.avi', '.iso', '.wmv', '.flv'};
+
+  bool get _useDesktopFallbackOnIOS {
+    final lower = filePath.toLowerCase();
+    for (final ext in _avPlayerUnsupported) {
+      if (lower.endsWith(ext)) return true;
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (Platform.isIOS) {
+    if (Platform.isIOS && !_useDesktopFallbackOnIOS) {
       return IOSPlayerScreen(
         filePath: filePath,
         title: title,
