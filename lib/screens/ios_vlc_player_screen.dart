@@ -65,9 +65,13 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<Duration>? _durationSub;
+  StreamSubscription<bool>? _pipActiveSub;
+  StreamSubscription<bool>? _pipAvailableSub;
 
   String? _playbackError;
   bool _completionHandled = false;
+  bool _pipActive = false;
+  bool _pipAvailable = false;
 
   // VLCKit hat keine eingebaute Overlay-Chrome — wir zeichnen unsere
   // eigenen minimalen Controls in Flutter darüber. Beim Tap auf den
@@ -109,6 +113,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _playingSub?.cancel();
     _positionSub?.cancel();
     _durationSub?.cancel();
+    _pipActiveSub?.cancel();
+    _pipAvailableSub?.cancel();
     super.dispose();
   }
 
@@ -158,6 +164,26 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       if (!mounted) return;
       setState(() => _duration = dur);
     });
+
+    _pipActiveSub = ctrl.pipActiveStream.listen((active) {
+      if (!mounted) return;
+      setState(() => _pipActive = active);
+    });
+
+    _pipAvailableSub = ctrl.pipAvailableStream.listen((avail) {
+      if (!mounted) return;
+      setState(() => _pipAvailable = avail);
+    });
+  }
+
+  Future<void> _togglePiP() async {
+    final ctrl = _controller;
+    if (ctrl == null) return;
+    if (_pipActive) {
+      await ctrl.stopPiP();
+    } else {
+      await ctrl.startPiP();
+    }
   }
 
   void _saveProgress({bool treatAsCompleted = false}) {
@@ -282,12 +308,40 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           ),
         ),
 
+        // PiP-Button oben rechts — Spiegel zum Close-Button. Wird nur
+        // enabled wenn iOS uns signalisiert dass PiP bereit ist (Audio-
+        // Session steht, Sample-Buffer-Layer ist mounted). Solange VLC
+        // noch nicht den ersten Frame geliefert hat, bleibt der Button
+        // ausgegraut.
+        Positioned(
+          top: MediaQuery.of(context).padding.top + 8,
+          right: 8,
+          child: SafeArea(
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.4),
+              borderRadius: BorderRadius.circular(22),
+              child: IconButton(
+                icon: Icon(
+                  _pipActive
+                      ? Icons.picture_in_picture_alt_rounded
+                      : Icons.picture_in_picture_rounded,
+                  color: _pipAvailable
+                      ? Colors.white
+                      : Colors.white.withValues(alpha: 0.35),
+                ),
+                tooltip: _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
+                onPressed: _pipAvailable ? _togglePiP : null,
+              ),
+            ),
+          ),
+        ),
+
         // Titel-Zeile oben mittig — hilft zu erkennen was gerade läuft
         // (vor allem nach einem Auto-Next).
         Positioned(
           top: MediaQuery.of(context).padding.top + 14,
           left: 72,
-          right: 16,
+          right: 72,
           child: Text(
             _currentEpisodeTitle ?? widget.title,
             maxLines: 1,

@@ -32,24 +32,32 @@ class IOSVLCPlayerController {
   bool _playing = false;
   bool _completed = false;
   String? _lastError;
+  bool _pipActive = false;
+  bool _pipAvailable = false;
 
   final _positionCtrl = StreamController<Duration>.broadcast();
   final _durationCtrl = StreamController<Duration>.broadcast();
   final _playingCtrl = StreamController<bool>.broadcast();
   final _completedCtrl = StreamController<bool>.broadcast();
   final _errorCtrl = StreamController<String>.broadcast();
+  final _pipActiveCtrl = StreamController<bool>.broadcast();
+  final _pipAvailableCtrl = StreamController<bool>.broadcast();
 
   Duration get position => _position;
   Duration get duration => _duration;
   bool get isPlaying => _playing;
   bool get isCompleted => _completed;
   String? get lastError => _lastError;
+  bool get isPiPActive => _pipActive;
+  bool get isPiPAvailable => _pipAvailable;
 
   Stream<Duration> get positionStream => _positionCtrl.stream;
   Stream<Duration> get durationStream => _durationCtrl.stream;
   Stream<bool> get playingStream => _playingCtrl.stream;
   Stream<bool> get completedStream => _completedCtrl.stream;
   Stream<String> get errorStream => _errorCtrl.stream;
+  Stream<bool> get pipActiveStream => _pipActiveCtrl.stream;
+  Stream<bool> get pipAvailableStream => _pipAvailableCtrl.stream;
 
   void _onEvent(dynamic raw) {
     if (raw is! Map) return;
@@ -75,6 +83,14 @@ class IOSVLCPlayerController {
       case 'error':
         _lastError = raw['message'] as String?;
         if (_lastError != null) _errorCtrl.add(_lastError!);
+        break;
+      case 'pipState':
+        _pipActive = raw['value'] as bool? ?? false;
+        _pipActiveCtrl.add(_pipActive);
+        break;
+      case 'pipAvailability':
+        _pipAvailable = raw['value'] as bool? ?? false;
+        _pipAvailableCtrl.add(_pipAvailable);
         break;
     }
   }
@@ -104,6 +120,25 @@ class IOSVLCPlayerController {
     });
   }
 
+  Future<void> startPiP() async {
+    try {
+      await _methods.invokeMethod('startPiP');
+    } on PlatformException catch (e) {
+      _errorCtrl.add(e.message ?? 'PiP konnte nicht gestartet werden');
+    }
+  }
+
+  Future<void> stopPiP() => _methods.invokeMethod('stopPiP');
+
+  Future<bool> queryPiPPossible() async {
+    try {
+      final v = await _methods.invokeMethod<bool>('isPiPPossible');
+      return v ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> dispose() async {
     try {
       await _methods.invokeMethod('dispose');
@@ -113,6 +148,8 @@ class IOSVLCPlayerController {
     await _playingCtrl.close();
     await _completedCtrl.close();
     await _errorCtrl.close();
+    await _pipActiveCtrl.close();
+    await _pipAvailableCtrl.close();
   }
 }
 

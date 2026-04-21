@@ -20,6 +20,7 @@
 import Flutter
 import MobileVLCKit
 import UIKit
+import AVKit
 
 // MARK: - Plugin registration
 
@@ -81,6 +82,12 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     private var pendingStartSeconds: Double = 0
     private var didApplyStartSeek: Bool = false
 
+    // PiP-Koordinator — opt-in konstruiert, nur auf iOS 15+, weil die
+    // ContentSource(sampleBufferDisplayLayer:...)-API erst dort
+    // existiert. Unter iOS 15 gibt's auf dem VLC-Pfad kein PiP; der
+    // AVPlayer-Pfad für .mp4 bleibt davon unberührt.
+    private var pipCoordinator: AnyObject?
+
     init(frame: CGRect,
          viewId: Int64,
          args: [String: Any],
@@ -119,6 +126,29 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.videoView.frame = self.container.bounds
         self.videoView.autoresizingMask =
             [.flexibleWidth, .flexibleHeight]
+
+        // PiP-Koordinator attachen (iOS 15+). Die Sample-Buffer-Layer
+        // wird in den Container gehängt, nicht in die VLC-Drawable-View
+        // — VLCKit könnte sonst die Sublayers beim OpenGL-Resize kaputt
+        // machen. Die Layer ist sichtbar aber 1×1 Pixel + Opacity 0,
+        // damit iOS sie in der Hierarchie findet (PiP verlangt das).
+        if #available(iOS 15.0, *) {
+            let coord = VLCPiPCoordinator()
+            coord.attach(to: self.mediaPlayer, hostView: self.container)
+            coord.onPiPStateChanged = { [weak self] active in
+                self?.eventSink.send([
+                    "event": "pipState",
+                    "value": active,
+                ])
+            }
+            coord.onPiPAvailabilityChanged = { [weak self] possible in
+                self?.eventSink.send([
+                    "event": "pipAvailability",
+                    "value": possible,
+                ])
+            }
+            self.pipCoordinator = coord
+        }
 
         // Optional: Initial-Media in creationParams. Anders als beim
         // AVPlayer-Plugin starten wir hier NICHT direkt autoplay im
@@ -245,7 +275,35 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                       subtitleUrl: sub,
                       startSeconds: start)
             result(nil)
+        case "startPiP":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.startPiP()
+                result(nil)
+            } else {
+                result(FlutterError(code: "unavailable",
+                                    message: "PiP braucht iOS 15+",
+                                    details: nil))
+            }
+        case "stopPiP":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.stopPiP()
+            }
+            result(nil)
+        case "isPiPPossible":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                result(coord.isPiPPossible)
+            } else {
+                result(false)
+            }
         case "dispose":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.detach()
+            }
+            pipCoordinator = nil
             mediaPlayer.stop()
             mediaPlayer.delegate = nil
             result(nil)
