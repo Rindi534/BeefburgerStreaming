@@ -77,6 +77,12 @@ class VLCPiPCoordinator: NSObject {
     var onPiPStateChanged: ((_ active: Bool) -> Void)?
     var onPiPAvailabilityChanged: ((_ possible: Bool) -> Void)?
 
+    /// Wird true sobald der erste Frame erfolgreich in die displayLayer
+    /// enqueued wurde. Erst dann erzeugen wir den PiPController, weil
+    /// iOS sonst eine leere Layer sieht und isPictureInPicturePossible
+    /// dauerhaft auf false locked.
+    private var firstFrameEnqueued: Bool = false
+
     override init() {
         self.displayLayer = AVSampleBufferDisplayLayer()
         self.displayLayer.videoGravity = .resizeAspect
@@ -84,31 +90,15 @@ class VLCPiPCoordinator: NSObject {
         // iOS würde sonst eine weiße Fläche zeigen.
         self.displayLayer.backgroundColor = UIColor.black.cgColor
 
-        // CRITICAL: Ohne konfigurierte controlTimebase erkennt iOS die
-        // Layer NICHT als "playing video". Der PiP-Controller bleibt
-        // dann dauerhaft isPictureInPicturePossible=false, egal wieviele
-        // Frames wir enqueuen. Die Timebase verankert unsere PTS-Werte
-        // in der globalen Host-Time-Clock; Rate 1.0 signalisiert aktive
-        // Wiedergabe (0.0 = pausiert, was wir bei VLC-Pause syncen).
-        // OSStatus bewusst geprüft — auf manchen iOS-Versionen schlägt
-        // das fehl und liefert einen invaliden tb; dann lieber PiP
-        // deaktivieren als mit corrupted timebase einen Crash riskieren.
-        var tb: CMTimebase?
-        let status = CMTimebaseCreateWithSourceClock(
-            allocator: kCFAllocatorDefault,
-            sourceClock: CMClockGetHostTimeClock(),
-            timebaseOut: &tb)
-        if status == noErr, let timebase = tb {
-            CMTimebaseSetTime(timebase, time: .zero)
-            // Initial rate 1.0 — PiP-Controller betrachtet sonst den
-            // Layer-Status als "paused" und verweigert den Possible-
-            // State. syncTimebaseToPlayer() synchronisiert später auf
-            // den echten VLC-Play-State.
-            CMTimebaseSetRate(timebase, rate: 1.0)
-            self.displayLayer.controlTimebase = timebase
-        } else {
-            NSLog("[VLCPiP] CMTimebase creation failed: status=\(status)")
-        }
+        // Timebase-Erzeugung ist in attach() verschoben. Grund:
+        // zwischen init() und dem ersten tatsächlichen Frame-Enqueue
+        // vergehen oft mehrere hundert Millisekunden (init → Platform-
+        // View-Mount → attach → warten auf hasVideoOut → erster
+        // Snapshot). Wenn die Timebase schon in init() mit Rate 1.0
+        // losläuft, ist sie beim ersten Frame längst weitergewandert,
+        // während unsere PTS bei 0 starten — der Frame landet dann
+        // in der "Vergangenheit", iOS markiert die Layer als idle,
+        // isPictureInPicturePossible bleibt false (Symptom in v1.5.19).
 
         let tmp = NSTemporaryDirectory()
         self.snapshotPath = (tmp as NSString)
@@ -124,83 +114,114 @@ class VLCPiPCoordinator: NSObject {
         self.mediaPlayer = mediaPlayer
         self.hostView = hostView
 
-        // Die Sample-Buffer-Layer muss Teil einer sichtbaren Layer-
-        // Hierarchie in sinnvoller Größe sein, sonst lehnt iOS sie
-        // als PiP-Quelle ab ("isPictureInPicturePossible" bleibt
-        // false). WICHTIG: NICHT opacity=0 oder isHidden=true setzen —
-        // einige iOS-Versionen markieren die Layer dann als "not
-        // contributing to screen" und der PiP-Controller verweigert
-        // sich. Stattdessen blenden wir die Layer über Z-Ordering
-        // aus: VLC's drawable-UIView ist opak schwarz und deckt als
-        // Subview unsere Sample-Buffer-Layer visuell ab, aber iOS
-        // "sieht" sie trotzdem als aktive Layer.
-        displayLayer.frame = hostView.bounds
+        // 1. Layer-Größe: echte hostView-Bounds nehmen, mit Fallback.
+        //    iOS verwirft 0×0-Layer als PiP-Quelle — wenn die PlatformView
+        //    beim attach() noch nicht gelayoutet ist (was auf iOS häufig
+        //    der Fall ist, weil Flutter async embeddet), bleibt der
+        //    Possible-State permanent false. Daher Fallback auf 1280×720,
+        //    wird beim ersten layoutPass dann via DispatchQueue.main.async
+        //    auf die echte Größe korrigiert.
+        let initialSize: CGSize
+        if hostView.bounds.width > 1 && hostView.bounds.height > 1 {
+            initialSize = hostView.bounds.size
+        } else {
+            initialSize = CGSize(width: 1280, height: 720)
+        }
+        displayLayer.frame = CGRect(origin: .zero, size: initialSize)
         hostView.layer.insertSublayer(displayLayer, at: 0)
+        NSLog("[VLCPiP] attach: layer size=\(initialSize) "
+            + "(hostView.bounds=\(hostView.bounds))")
 
-        // Layout-Sync: wenn der Container resized wird (Rotation,
-        // Splitview etc.) muss die displayLayer mitwachsen. Ohne das
-        // bleibt die Layer bei der Initial-Größe und iOS verwirft sie
-        // als PiP-Quelle sobald die Dimensionen nicht mehr matchen.
-        // Hostview ist beim Attach evtl. noch nicht gelayoutet
-        // (bounds.size.zero) — async dispatchen und nochmal syncen.
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, let host = self.hostView else { return }
-            self.displayLayer.frame = host.bounds
+        // 2. Timebase JETZT erzeugen (nicht mehr in init) damit ihr
+        //    Nullpunkt beim Start des Frame-Flows liegt — PTS und
+        //    Timebase-Zeit bleiben dadurch synchron ab Frame #1.
+        var tb: CMTimebase?
+        let status = CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &tb)
+        if status == noErr, let timebase = tb {
+            CMTimebaseSetTime(timebase, time: .zero)
+            CMTimebaseSetRate(timebase, rate: 1.0)
+            displayLayer.controlTimebase = timebase
+            NSLog("[VLCPiP] Timebase initialized")
+        } else {
+            NSLog("[VLCPiP] Timebase creation FAILED status=\(status) — PiP wird nicht funktionieren")
         }
 
-        // AVAudioSession muss .playback sein damit PiP und
-        // Background-Audio überhaupt erlaubt werden. NativePlayerPlugin
-        // setzt das auch — zweimal setzen schadet nicht.
+        // Layout-Sync: wenn der Container resized wird (Rotation etc.)
+        // muss die displayLayer mitwachsen.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let host = self.hostView else { return }
+            if host.bounds.width > 1 && host.bounds.height > 1 {
+                self.displayLayer.frame = host.bounds
+                NSLog("[VLCPiP] attach (async): layer resized to \(host.bounds.size)")
+            }
+        }
+
+        // 3. AVAudioSession — zwingend .playback für PiP.
         do {
             try AVAudioSession.sharedInstance().setCategory(
                 .playback, mode: .moviePlayback, options: [])
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
-            // Nicht fatal; ohne .playback wird PiP zwar scheitern, aber
-            // der Playback selbst läuft weiter.
             NSLog("[VLCPiP] AVAudioSession setup failed: \(error)")
         }
 
-        // PiP-Controller mit ContentSource (iOS 15+ API, weil wir eine
-        // custom sample-buffer-layer haben statt einer AVPlayerLayer).
+        // 4. Capture-Loop zuerst — so können Frames in die Layer
+        //    einlaufen bevor wir den PiPController daran binden.
+        startCapture()
+
+        // 5. PiPController ERST NACHDEM mindestens ein Frame angekommen
+        //    ist. Grund: iOS evaluiert isPictureInPicturePossible direkt
+        //    bei .init(contentSource:) und wenn die Layer zu dem Zeitpunkt
+        //    noch keine Frames hat / leer ist, latcht er teilweise auf
+        //    false. maybeCreatePiPController() pollt in jedem Tick.
+        //    Zusätzlicher Fallback-Timer nach 2s damit wir zumindest einen
+        //    Controller aufsetzen auch wenn hasVideoOut nie kommt — in dem
+        //    Fall bleibt Possible eben false und der Button bleibt grau,
+        //    aber es crasht nichts.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self = self else { return }
+            if self.pipController == nil {
+                NSLog("[VLCPiP] 2s-Fallback: PiPController wird auch ohne erste Frames aufgesetzt")
+                self.createPiPController()
+            }
+        }
+    }
+
+    /// Erzeugt den AVPictureInPictureController, verkabelt Observer und
+    /// Delegate. Wird entweder durch maybeCreatePiPController nach dem
+    /// ersten enqueueten Frame oder durch den 2s-Fallback-Timer
+    /// aufgerufen. Guard gegen doppelten Aufruf via pipController-Check.
+    private func createPiPController() {
+        guard pipController == nil else { return }
         let source = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: displayLayer,
             playbackDelegate: self
         )
         let ctrl = AVPictureInPictureController(contentSource: source)
         ctrl.delegate = self
-        // Auto-PiP beim App-Hintergrund — genau das was der User
-        // erwartet wenn er aus der App rausswipet. iOS triggert PiP
-        // automatisch SOBALD:
-        //   1. canStartPictureInPictureAutomaticallyFromInline = true
-        //   2. Die App ist "actively playing inline video" — d.h.
-        //      die Sample-Buffer-Layer muss AKTIV Frames enqueuen,
-        //      nicht erst wenn der User den PiP-Button drückt.
-        // Deshalb starten wir den Capture-Loop schon in attach(),
-        // nicht erst in startPiP(). Ist auch kein Performance-Problem
-        // weil saveVideoSnapshot bei 10 Hz unter 5 ms CPU liegt.
         ctrl.canStartPictureInPictureAutomaticallyFromInline = true
         self.pipController = ctrl
 
-        // iOS meldet über isPictureInPicturePossible wann alles bereit
-        // ist (Audio-Session aktiv, Layer gemountet, etc.). Wir spiegeln
-        // das an den Dart-Layer damit der Button nur clickable wird wenn
-        // PiP wirklich greift.
         possibilityObservation = ctrl.observe(
             \.isPictureInPicturePossible,
             options: [.initial, .new]
         ) { [weak self] controller, _ in
             let possible = controller.isPictureInPicturePossible
             NSLog("[VLCPiP] isPictureInPicturePossible → \(possible) "
-                + "(supported=\(AVPictureInPictureController.isPictureInPictureSupported()))")
+                + "(supported=\(AVPictureInPictureController.isPictureInPictureSupported()), "
+                + "layerStatus=\(self?.displayLayer.status.rawValue ?? -1))")
             self?.onPiPAvailabilityChanged?(possible)
         }
+        NSLog("[VLCPiP] PiPController created, waiting for Possible-state")
+    }
 
-        // Capture sofort starten — für Auto-PiP muss der Frame-Flow
-        // VOR dem Backgrounding laufen, sonst registriert iOS das
-        // nicht als "inline video playback" und ignoriert den
-        // canStartPictureInPictureAutomaticallyFromInline-Hint.
-        startCapture()
+    private func maybeCreatePiPController() {
+        guard pipController == nil, firstFrameEnqueued else { return }
+        NSLog("[VLCPiP] Erster Frame enqueued → createPiPController")
+        createPiPController()
     }
 
     func detach() {
@@ -208,9 +229,12 @@ class VLCPiPCoordinator: NSObject {
         possibilityObservation?.invalidate()
         possibilityObservation = nil
         displayLayer.removeFromSuperlayer()
+        displayLayer.controlTimebase = nil
         pipController = nil
         mediaPlayer = nil
         hostView = nil
+        firstFrameEnqueued = false
+        lastSyncedRate = -1
         // Snapshot-Tempfile aufräumen.
         try? FileManager.default.removeItem(atPath: snapshotPath)
     }
@@ -226,15 +250,19 @@ class VLCPiPCoordinator: NSObject {
     }
 
     func startPiP() {
-        guard let ctrl = pipController else { return }
-        guard ctrl.isPictureInPicturePossible else {
-            NSLog("[VLCPiP] startPiP aber isPictureInPicturePossible=false — Abbruch")
+        guard let ctrl = pipController else {
+            NSLog("[VLCPiP] startPiP: pipController noch nil (Frame-Flow noch nicht bereit) — Abbruch")
             return
         }
-        // Capture läuft bereits seit attach() — nur synchron einen
-        // frischen Frame ziehen damit der erste PiP-Frame nicht der
-        // letzte stale Snapshot ist.
+        guard ctrl.isPictureInPicturePossible else {
+            NSLog("[VLCPiP] startPiP aber isPictureInPicturePossible=false "
+                + "(hasVideoOut=\(mediaPlayer?.hasVideoOut ?? false), "
+                + "firstFrameEnqueued=\(firstFrameEnqueued), "
+                + "layerStatus=\(displayLayer.status.rawValue)) — Abbruch")
+            return
+        }
         captureOneFrame()
+        NSLog("[VLCPiP] startPictureInPicture() wird aufgerufen")
         ctrl.startPictureInPicture()
     }
 
@@ -298,19 +326,37 @@ class VLCPiPCoordinator: NSObject {
         }
     }
 
+    /// Nur für Throttled-Logging: Sekunden-Auflösung des letzten Reports
+    /// "kein Frame weil X".
+    private var lastBlockReasonLogSec: Int = -1
+    private func logBlockReasonOnce(_ reason: String) {
+        let now = Int(Date().timeIntervalSince1970)
+        if now != lastBlockReasonLogSec {
+            lastBlockReasonLogSec = now
+            NSLog("[VLCPiP] captureOneFrame blocked: \(reason)")
+        }
+    }
+
     private func captureOneFrame() {
-        guard let player = mediaPlayer else { return }
+        guard let player = mediaPlayer else {
+            logBlockReasonOnce("no mediaPlayer")
+            return
+        }
         // Defensive gates: VLCMediaPlayer.saveVideoSnapshot crasht in
         // MobileVLCKit 3.5 wenn es VOR dem ersten .opening-State
         // aufgerufen wird (kein internal decoder handle). Wir warten
         // mindestens bis opening/buffering/playing/paused. Error/
         // stopped/esAdded-States überspringen wir auch, da ist kein
         // Frame verfügbar.
-        guard player.media != nil else { return }
+        guard player.media != nil else {
+            logBlockReasonOnce("player.media=nil")
+            return
+        }
         switch player.state {
         case .opening, .buffering, .playing, .paused:
             break
         default:
+            logBlockReasonOnce("state=\(player.state.rawValue)")
             return
         }
         // KRITISCHER Gate: VLCMediaPlayer.saveVideoSnapshotAt wirft eine
@@ -321,7 +367,10 @@ class VLCPiPCoordinator: NSObject {
         // hasVideoOut wird von VLCKit auf true gesetzt sobald der
         // libvlc video_output aktiv ist. Das ist der einzige zuverlässige
         // Ready-Indikator. Siehe Crash-Report v1.5.16 (Runner 865BAEB7).
-        guard player.hasVideoOut else { return }
+        guard player.hasVideoOut else {
+            logBlockReasonOnce("hasVideoOut=false (state=\(player.state.rawValue))")
+            return
+        }
         if snapshotInFlight { return }
         snapshotInFlight = true
 
@@ -341,14 +390,12 @@ class VLCPiPCoordinator: NSObject {
             return
         }
         if let buffer = sampleBuffer(from: image) {
-            // KEIN flush() bei .failed mehr — Flush setzt die Layer in
-            // den Idle-State zurück, was isPictureInPicturePossible auf
-            // false kippt (kurzzeitig). Resultat: PiP-Button flickerte
-            // im 1-2s-Takt (v1.5.18). Wenn die Layer wirklich failed
-            // ist, bringt der nächste enqueue sie zurück; andernfalls
-            // war der Flush unnötig und hat nur den Possible-State
-            // zerschossen.
             displayLayer.enqueue(buffer)
+            if !firstFrameEnqueued {
+                firstFrameEnqueued = true
+                NSLog("[VLCPiP] erster Frame enqueued; layerStatus=\(displayLayer.status.rawValue)")
+                maybeCreatePiPController()
+            }
         }
         snapshotInFlight = false
     }
@@ -403,29 +450,19 @@ class VLCPiPCoordinator: NSObject {
             formatDescriptionOut: &formatDescription)
         guard let formatDesc = formatDescription else { return nil }
 
-        // PTS AUS DER TIMEBASE der displayLayer selbst ableiten. Die
-        // Timebase läuft gegen CMClockGetHostTimeClock() mit Rate 1.0;
-        // wenn wir PTS aus player.time (Video-Position in ms seit
-        // Beginn) nehmen, liegen die Frames in einer komplett anderen
-        // Timeline (Host-Sekunden-seit-Boot vs. Video-ms-seit-Start).
-        // iOS hielt die Frames dann für uralt → Layer "nicht aktiv" →
-        // isPictureInPicturePossible oszillierte im 1-2s-Takt und der
-        // PiP-Button blinkte (v1.5.18).
-        //
-        // Stattdessen: PTS = aktuelle Timebase-Zeit + 1 Frame Lead,
-        // damit die Layer den Frame SOFORT als "current" ansieht.
-        // Der tatsächliche Video-Content-Zeitstempel ist für iOS
-        // irrelevant, wir müssen nur monotone, timebase-konsistente
-        // PTS liefern.
-        let now: CMTime
+        // PTS = aktuelle Timebase-Zeit (ohne Lead). Zusammen mit dem
+        // kCMSampleAttachmentKey_DisplayImmediately-Attachment unten
+        // reicht das, damit iOS den Frame sofort präsentiert UND die
+        // Layer als "playing" wahrnimmt. Der Lead aus v1.5.19 hatte
+        // das Gegenteil bewirkt — Frames lagen in der Zukunft der
+        // Timebase, die Layer hielt sie zurück, Possible-State blieb
+        // false.
+        let pts: CMTime
         if let tb = displayLayer.controlTimebase {
-            now = CMTimebaseGetTime(tb)
+            pts = CMTimebaseGetTime(tb)
         } else {
-            now = CMClockGetTime(CMClockGetHostTimeClock())
+            pts = CMClockGetTime(CMClockGetHostTimeClock())
         }
-        let pts = CMTimeAdd(
-            now,
-            CMTime(value: 1, timescale: CMTimeScale(captureFPS)))
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(captureFPS)),
             presentationTimeStamp: pts,
