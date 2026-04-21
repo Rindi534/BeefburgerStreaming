@@ -1,5 +1,7 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/media_item.dart';
 import '../models/episode.dart';
 import '../models/watch_progress.dart';
@@ -590,24 +592,68 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildErrorState(BuildContext context, WidgetRef ref, String error) {
+    // Explicit foreground colors are required on this screen: without
+    // them the platform default for ElevatedButton is a dark-on-dark
+    // combination that leaves the button looking like a blank red pill.
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.error_outline_rounded,
-              size: 64, color: AppTheme.accent),
-          const SizedBox(height: 16),
-          Text(error, style: Theme.of(context).textTheme.bodyLarge),
-          const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed: () =>
-                ref.read(mediaLibraryProvider.notifier).refresh(),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.accent,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                size: 64, color: AppTheme.accent),
+            const SizedBox(height: 16),
+            Text(
+              error,
+              style: Theme.of(context).textTheme.bodyLarge,
+              textAlign: TextAlign.center,
             ),
-            child: const Text('Erneut versuchen'),
-          ),
-        ],
+            const SizedBox(height: 24),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () =>
+                      ref.read(mediaLibraryProvider.notifier).refresh(),
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Erneut versuchen'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.accent,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                // iOS escape hatch: when the container UUID rotates
+                // (reinstall / re-sign), the stored absolute path is
+                // dead. This button force-resets the media folder to
+                // the current Documents dir, which is the only valid
+                // location on iOS anyway.
+                if (Platform.isIOS)
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final docs =
+                          await getApplicationDocumentsDirectory();
+                      await ref
+                          .read(settingsProvider.notifier)
+                          .setMediaFolderPath(docs.path);
+                      await ref
+                          .read(mediaLibraryProvider.notifier)
+                          .refresh();
+                    },
+                    icon: const Icon(Icons.folder_open_rounded),
+                    label: const Text('Dateien-Ordner verwenden'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: AppTheme.textMuted),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/media_item.dart';
 import '../services/media_scanner.dart';
 import '../services/thumbnail_service.dart';
@@ -763,8 +764,58 @@ class MediaLibraryNotifier extends StateNotifier<MediaLibraryState> {
 
   Future<void> refresh() async {
     final settings = _ref.read(settingsProvider);
-    if (settings.mediaFolderPath != null) {
-      await scanLibrary(settings.mediaFolderPath!);
+    if (settings.mediaFolderPath == null) return;
+
+    // iOS-only: the app's Documents container lives at a path that
+    // includes a UUID (e.g. /var/mobile/Containers/Data/Application/
+    // <UUID>/Documents). iOS may change that UUID across reinstalls /
+    // re-signings (Sideloadly flips the signing cert) — at which point
+    // the stored absolute path is dead and the scanner bails with
+    // "Medien-Ordner nicht gefunden".
+    //
+    // The user-facing concept of the media folder on iOS is "the folder
+    // the Files app shows under BeefburgerStreaming", which is always
+    // the *current* Documents dir. So if the stored path looks stale,
+    // we silently re-resolve and persist it.
+    var path = settings.mediaFolderPath!;
+    if (Platform.isIOS) {
+      path = await _resolveIOSMediaFolder(path);
+    }
+    await scanLibrary(path);
+  }
+
+  /// iOS: maps an old container-Documents path to the *current* one,
+  /// handling the case where iOS has rotated the container UUID between
+  /// launches. No-op for paths that already resolve or that live
+  /// outside the app container (the latter shouldn't happen because the
+  /// iOS picker always returns Documents, but we don't want to rewrite
+  /// paths we don't fully understand).
+  Future<String> _resolveIOSMediaFolder(String stored) async {
+    try {
+      if (await Directory(stored).exists()) return stored;
+      final docs = (await getApplicationDocumentsDirectory()).path;
+      // Heuristic: the stored path is a container Documents path if it
+      // contains "/Containers/Data/Application/" and ends with
+      // "/Documents" (or a subpath thereof). Remap by replacing the
+      // old container prefix with the new Documents dir, preserving
+      // any user-chosen subfolder after "/Documents".
+      final marker = RegExp(r'/Containers/Data/Application/[^/]+/Documents');
+      final m = marker.firstMatch(stored);
+      final String remapped;
+      if (m != null) {
+        remapped = docs + stored.substring(m.end);
+      } else {
+        // Unknown shape — fall back to bare Documents so the user
+        // always has a usable library instead of a dead-end error.
+        remapped = docs;
+      }
+      // Persist so the next launch doesn't have to remap again.
+      await _ref.read(settingsProvider.notifier).setMediaFolderPath(remapped);
+      return remapped;
+    } catch (_) {
+      // Any failure here is non-fatal — fall through to the normal
+      // "folder missing" error path with the original stored value.
+      return stored;
     }
   }
 
