@@ -90,15 +90,24 @@ class VLCPiPCoordinator: NSObject {
         // Frames wir enqueuen. Die Timebase verankert unsere PTS-Werte
         // in der globalen Host-Time-Clock; Rate 1.0 signalisiert aktive
         // Wiedergabe (0.0 = pausiert, was wir bei VLC-Pause syncen).
+        // OSStatus bewusst geprüft — auf manchen iOS-Versionen schlägt
+        // das fehl und liefert einen invaliden tb; dann lieber PiP
+        // deaktivieren als mit corrupted timebase einen Crash riskieren.
         var tb: CMTimebase?
-        CMTimebaseCreateWithSourceClock(
+        let status = CMTimebaseCreateWithSourceClock(
             allocator: kCFAllocatorDefault,
             sourceClock: CMClockGetHostTimeClock(),
             timebaseOut: &tb)
-        if let timebase = tb {
+        if status == noErr, let timebase = tb {
             CMTimebaseSetTime(timebase, time: .zero)
+            // Initial rate 1.0 — PiP-Controller betrachtet sonst den
+            // Layer-Status als "paused" und verweigert den Possible-
+            // State. syncTimebaseToPlayer() synchronisiert später auf
+            // den echten VLC-Play-State.
             CMTimebaseSetRate(timebase, rate: 1.0)
             self.displayLayer.controlTimebase = timebase
+        } else {
+            NSLog("[VLCPiP] CMTimebase creation failed: status=\(status)")
         }
 
         let tmp = NSTemporaryDirectory()
@@ -267,23 +276,50 @@ class VLCPiPCoordinator: NSObject {
     /// aktueller Wiedergabeposition und Play-State. Ohne das driftet
     /// der PiP-Scrubber gegen die tatsächliche VLC-Zeit, und pause/play
     /// wird vom System-PiP-UI nicht als Zustandsänderung erkannt.
+    ///
+    /// Wir updaten nur bei echten State-Wechseln (nicht jeden Tick),
+    /// weil CMTimebaseSetTime/SetRate nicht garantiert thread-safe
+    /// gegen CoreMedias internen Frame-Scheduler sind und bei 10Hz-
+    /// Dauerfeuer gab's Crash-Reports.
+    private var lastSyncedRate: Float64 = -1
+    private var lastSyncedMs: Int32 = -1
     private func syncTimebaseToPlayer() {
         guard let tb = displayLayer.controlTimebase,
               let player = mediaPlayer else { return }
-        let playerMs = player.time.intValue
-        let target = CMTime(value: CMTimeValue(max(0, playerMs)), timescale: 1000)
-        CMTimebaseSetTime(tb, time: target)
-        CMTimebaseSetRate(tb, rate: player.isPlaying ? 1.0 : 0.0)
+        let playerMs = max(0, player.time.intValue)
+        let rate: Float64 = player.isPlaying ? 1.0 : 0.0
+
+        // Rate nur bei echter Änderung setzen.
+        if rate != lastSyncedRate {
+            CMTimebaseSetRate(tb, rate: rate)
+            lastSyncedRate = rate
+        }
+
+        // Zeit nur korrigieren wenn der Drift größer als 500ms ist —
+        // sonst läuft die Timebase selbst mit und wir würden sie bei
+        // jedem Tick zurückbiegen.
+        if abs(playerMs - lastSyncedMs) > 500 {
+            let target = CMTime(value: CMTimeValue(playerMs), timescale: 1000)
+            CMTimebaseSetTime(tb, time: target)
+            lastSyncedMs = playerMs
+        }
     }
 
     private func captureOneFrame() {
         guard let player = mediaPlayer else { return }
-        // Nicht mehr auf isPlaying gaten. Auch im Paused-State wollen
-        // wir den zuletzt gezeigten Frame in die Layer pushen —
-        // erstens damit der PiP-Controller überhaupt in den "possible"
-        // Zustand kommt (braucht aktive Frame-Zustellung), zweitens
-        // damit das eingefrorene PiP-Bild bei Pause ein echter Frame
-        // ist und nicht schwarz.
+        // Defensive gates: VLCMediaPlayer.saveVideoSnapshot crasht in
+        // MobileVLCKit 3.5 wenn es VOR dem ersten .opening-State
+        // aufgerufen wird (kein internal decoder handle). Wir warten
+        // mindestens bis opening/buffering/playing/paused. Error/
+        // stopped/esAdded-States überspringen wir auch, da ist kein
+        // Frame verfügbar.
+        guard player.media != nil else { return }
+        switch player.state {
+        case .opening, .buffering, .playing, .paused:
+            break
+        default:
+            return
+        }
         if snapshotInFlight { return }
         snapshotInFlight = true
 
