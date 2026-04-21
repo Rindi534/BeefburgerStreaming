@@ -17,6 +17,21 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+/// Eine Audio- oder Untertitel-Spur wie MobileVLCKit sie ausgibt.
+/// [id]=-1 kennzeichnet je nach Kontext "deaktiviert" (Subtitle-Off)
+/// oder eine VLC-interne Pseudo-Spur; die UI sollte das prüfen.
+class VlcTrack {
+  final int id;
+  final String name;
+  final bool isCurrent;
+
+  const VlcTrack({
+    required this.id,
+    required this.name,
+    required this.isCurrent,
+  });
+}
+
 /// Imperative handle zu einer mounten VLC-Player-Instanz.
 /// 1:1 zum viewId der zugehörigen [IOSVLCPlayerView].
 class IOSVLCPlayerController {
@@ -129,6 +144,40 @@ class IOSVLCPlayerController {
   }
 
   Future<void> stopPiP() => _methods.invokeMethod('stopPiP');
+
+  /// Liste der verfügbaren Audio-Spuren der aktuellen Media. VLC liefert
+  /// bei einem MKV z.B. "Deutsch", "Englisch", "Kommentar"; bei manchen
+  /// Files ist die erste Spur eine "Disable"-Spur mit id=-1 — das
+  /// filtern wir hier NICHT raus, soll der Aufrufer entscheiden.
+  Future<List<VlcTrack>> getAudioTracks() async {
+    final raw = await _methods.invokeMethod<List<dynamic>>('getAudioTracks');
+    return _decodeTracks(raw);
+  }
+
+  /// Liste der Untertitel-Spuren. Eintrag mit id=-1 (sofern VLC ihn
+  /// zurückliefert) bedeutet "Untertitel aus".
+  Future<List<VlcTrack>> getSubtitleTracks() async {
+    final raw =
+        await _methods.invokeMethod<List<dynamic>>('getSubtitleTracks');
+    return _decodeTracks(raw);
+  }
+
+  Future<void> setAudioTrack(int id) =>
+      _methods.invokeMethod('setAudioTrack', {'id': id});
+
+  Future<void> setSubtitleTrack(int id) =>
+      _methods.invokeMethod('setSubtitleTrack', {'id': id});
+
+  List<VlcTrack> _decodeTracks(List<dynamic>? raw) {
+    if (raw == null) return const [];
+    return raw.whereType<Map>().map((m) {
+      return VlcTrack(
+        id: (m['id'] as num?)?.toInt() ?? -1,
+        name: (m['name'] as String?) ?? 'Unbekannt',
+        isCurrent: (m['isCurrent'] as bool?) ?? false,
+      );
+    }).toList();
+  }
 
   Future<bool> queryPiPPossible() async {
     try {

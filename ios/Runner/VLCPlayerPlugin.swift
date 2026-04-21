@@ -201,9 +201,18 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // nicht kann — auf echten Geräten ist's ein massiver Gewinn
         // bei 1080p+ und HEVC.
         media.addOption(":codec=videotoolbox")
-        // Netzwerk-Caching-Buffer (ms). Für lokale Dateien fast
-        // irrelevant, Default passt.
-        media.addOption(":file-caching=1500")
+        // Datei-Caching-Buffer (ms). Höher = weniger hörbarer Audio-
+        // Glitch beim pause()/play(), weil VLC bei Resume mehr
+        // vorgecachete Samples hat und nicht erst nachlesen muss.
+        // 2500ms = guter Kompromiss zwischen RAM-Verbrauch und
+        // flüssigem Resume. v1.5.24 hochgezogen von 1500ms.
+        media.addOption(":file-caching=2500")
+        // Clock-Jitter-Fenster: bei 0 verzichtet VLC auf aggressive
+        // Korrektur-Jumps bei minimalen Audio-Video-Driften, was sich
+        // nach Pause als hörbares Stottern äußert. Setzt den Audio-
+        // Refill-Pfad auf sanftes Resync statt auf Re-Sync-Jump.
+        media.addOption(":clock-jitter=0")
+        media.addOption(":clock-synchro=0")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
@@ -301,6 +310,29 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                 coord.stopPiP()
             }
             result(nil)
+        case "getAudioTracks":
+            result(collectTracks(
+                ids: mediaPlayer.audioTrackIndexes,
+                names: mediaPlayer.audioTrackNames,
+                current: mediaPlayer.currentAudioTrackIndex))
+        case "getSubtitleTracks":
+            result(collectTracks(
+                ids: mediaPlayer.videoSubTitlesIndexes,
+                names: mediaPlayer.videoSubTitlesNames,
+                current: mediaPlayer.currentVideoSubTitleIndex))
+        case "setAudioTrack":
+            if let args = call.arguments as? [String: Any],
+               let id = args["id"] as? Int {
+                mediaPlayer.currentAudioTrackIndex = Int32(id)
+            }
+            result(nil)
+        case "setSubtitleTrack":
+            // id = -1 schaltet Untertitel aus (VLC-Konvention).
+            if let args = call.arguments as? [String: Any],
+               let id = args["id"] as? Int {
+                mediaPlayer.currentVideoSubTitleIndex = Int32(id)
+            }
+            result(nil)
         case "isPiPPossible":
             if #available(iOS 15.0, *),
                let coord = pipCoordinator as? VLCPiPCoordinator {
@@ -320,6 +352,34 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    /// Helper: baut eine Liste aus [{id, name, isCurrent}] Dicts aus den
+    /// parallelen Arrays die MobileVLCKit zurückgibt (IDs und Namen
+    /// kommen separat; die Reihenfolge zwischen den beiden Arrays
+    /// korrespondiert). VLC-Konvention: id = -1 bedeutet
+    /// "deaktiviert"/"keine Spur".
+    private func collectTracks(ids: [Any]?,
+                               names: [Any]?,
+                               current: Int32) -> [[String: Any]] {
+        guard let ids = ids, let names = names else { return [] }
+        let count = min(ids.count, names.count)
+        var out: [[String: Any]] = []
+        for i in 0..<count {
+            let idValue: Int
+            if let n = ids[i] as? NSNumber {
+                idValue = n.intValue
+            } else {
+                continue
+            }
+            let nameValue = (names[i] as? String) ?? "Track \(idValue)"
+            out.append([
+                "id": idValue,
+                "name": nameValue,
+                "isCurrent": idValue == Int(current),
+            ])
+        }
+        return out
     }
 
     private func seek(toSeconds seconds: Double) {

@@ -74,6 +74,18 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   bool _pipActive = false;
   bool _pipAvailable = false;
 
+  // Verfügbare Tracks — werden nach Playback-Start via Plugin abgefragt
+  // (MobileVLCKit kennt die erst, wenn der Decoder die Streams enumeriert
+  // hat, daher zeitversetzt befüllen).
+  List<VlcTrack> _audioTracks = const [];
+  List<VlcTrack> _subtitleTracks = const [];
+
+  // Next-Episode-Countdown. _showNextEpisode wird true wenn Position ≥ 95%
+  // der Dauer (entsprechend player_screen.dart auf Windows). _watchingCredits
+  // heißt: User hat explizit "Abspann ansehen" gedrückt → auto-skip aus.
+  bool _showNextEpisode = false;
+  bool _watchingCredits = false;
+
   // VLCKit hat keine eingebaute Overlay-Chrome — wir zeichnen unsere
   // eigenen minimalen Controls in Flutter darüber. Beim Tap auf den
   // Player erscheinen sie, nach 3s blenden sie aus (wie Apples
@@ -177,11 +189,16 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _positionSub = ctrl.positionStream.listen((pos) {
       if (!mounted) return;
       setState(() => _position = pos);
+      _checkNearEnd(pos);
     });
 
     _durationSub = ctrl.durationStream.listen((dur) {
       if (!mounted) return;
       setState(() => _duration = dur);
+      // Dauer kommt erst nach "playing"-State aus VLC — guter Moment
+      // um Audio- und Untertitel-Spuren zu enumerieren (der Decoder
+      // hat bis dahin alle Streams gesehen).
+      _refreshTracks();
     });
 
     _pipActiveSub = ctrl.pipActiveStream.listen((active) {
@@ -218,6 +235,74 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     } else {
       await ctrl.startPiP();
     }
+  }
+
+  Future<void> _refreshTracks() async {
+    final ctrl = _controller;
+    if (ctrl == null) return;
+    try {
+      final audio = await ctrl.getAudioTracks();
+      final subs = await ctrl.getSubtitleTracks();
+      if (!mounted) return;
+      setState(() {
+        _audioTracks = audio;
+        _subtitleTracks = subs;
+      });
+    } catch (_) {
+      // Nicht kritisch — User kommt ohne Dropdown-Menüs aus.
+    }
+  }
+
+  /// Prüft ob wir uns den "nächste Folge"-Overlay anzeigen (95 %) und
+  /// ob wir schon über die Auto-Skip-Schwelle (99.5 %) drüber sind.
+  /// Gleiche Schwellen wie auf Windows (siehe player_screen.dart).
+  void _checkNearEnd(Duration position) {
+    if (_lookupNextEpisode() == null) return;
+    if (_completionHandled) return;
+    final totalMs = _duration.inMilliseconds;
+    if (totalMs <= 30000) return;
+    final remaining = 1.0 - (position.inMilliseconds / totalMs);
+    if (remaining <= 0.05 && !_showNextEpisode) {
+      setState(() => _showNextEpisode = true);
+    }
+    if (remaining <= 0.005 && !_watchingCredits && _showNextEpisode) {
+      _completionHandled = true;
+      _playNextEpisode();
+    }
+  }
+
+  /// 0.0 (grad erschienen bei 5 % Rest) → 1.0 (Auto-Skip bei 0.5 %).
+  /// Wird vom Countdown-Button als Fortschrittsanzeige benutzt.
+  double get _countdownProgress {
+    if (!_showNextEpisode || _watchingCredits) return 0.0;
+    final totalMs = _duration.inMilliseconds;
+    if (totalMs <= 0) return 0.0;
+    final remaining = 1.0 - (_position.inMilliseconds / totalMs);
+    return ((0.05 - remaining) / (0.05 - 0.005)).clamp(0.0, 1.0);
+  }
+
+  Future<void> _skipBy(Duration delta) async {
+    final ctrl = _controller;
+    if (ctrl == null) return;
+    final target = _position + delta;
+    final clamped = Duration(
+      milliseconds: target.inMilliseconds.clamp(
+        0,
+        _duration.inMilliseconds > 0 ? _duration.inMilliseconds : (1 << 31),
+      ),
+    );
+    await ctrl.seek(clamped);
+    _scheduleControlsHide();
+  }
+
+  Future<void> _setAudioTrack(int id) async {
+    await _controller?.setAudioTrack(id);
+    await _refreshTracks();
+  }
+
+  Future<void> _setSubtitleTrack(int id) async {
+    await _controller?.setSubtitleTrack(id);
+    await _refreshTracks();
   }
 
   void _saveProgress({bool treatAsCompleted = false}) {
@@ -270,6 +355,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       _completionHandled = false;
       _position = Duration.zero;
       _duration = Duration.zero;
+      // Countdown-Overlay für neue Folge zurücksetzen.
+      _showNextEpisode = false;
+      _watchingCredits = false;
+      _audioTracks = const [];
+      _subtitleTracks = const [];
     });
 
     ctrl.replaceMedia(
@@ -337,6 +427,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             ),
           ),
 
+          // Next-Episode-Overlay — außerhalb der AnimatedOpacity-Controls,
+          // damit es auch dann sichtbar ist wenn die Haupt-Controls schon
+          // auto-hidden sind (Netflix-Pattern).
+          _buildNextEpisodeOverlay(context),
+
           if (_playbackError != null)
             Positioned.fill(child: _buildErrorOverlay()),
         ],
@@ -347,10 +442,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   Widget _buildControlsOverlay(BuildContext context) {
     return Stack(
       children: [
-        // Top-Bar: durchgehender Gradient als Lesbarkeits-Hintergrund,
-        // aber die Icons selbst hängen direkt am Rand (analog zu den
-        // Zeit-Labels unten). Titel ist zentriert und nimmt den Platz
-        // zwischen den beiden Icons ein.
+        // Top-Bar — Icons hängen flush am Rand (16px Inset wie die
+        // Zeitangaben unten), Titel in der Mitte, Reihenfolge rechts:
+        // Audio, Untertitel, PiP. SafeArea bewusst NICHT horizontal
+        // benutzt, weil die iPhone-Notch-Insets sonst im Landscape
+        // die Icons 40+px nach innen drücken — der User will die
+        // aber am Rand haben.
         Positioned(
           top: 0,
           left: 0,
@@ -359,6 +456,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             padding: EdgeInsets.only(
               top: MediaQuery.of(context).padding.top + 4,
               bottom: 12,
+              left: 16,
+              right: 16,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -370,99 +469,98 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 ],
               ),
             ),
-            child: SafeArea(
-              top: false,
-              bottom: false,
-              // Horizontales Padding bewusst klein (16) — entspricht
-              // dem Padding der Bottom-Bar, damit Close/PiP optisch
-              // in einer Linie mit den Zeitangaben stehen.
-              minimum: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  // Close links, Tap-Target auf 40×40 beschränkt und
-                  // ohne Padding dass das Icon direkt am Rand sitzt.
-                  SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      icon: const Icon(Icons.close_rounded,
-                          color: Colors.white, size: 26),
-                      tooltip: 'Schließen',
-                      onPressed: _handleClose,
+            child: Row(
+              children: [
+                _buildEdgeIcon(
+                  icon: Icons.close_rounded,
+                  tooltip: 'Schließen',
+                  onPressed: _handleClose,
+                ),
+                Expanded(
+                  child: Text(
+                    _currentEpisodeTitle ?? widget.title,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      shadows: [
+                        Shadow(color: Colors.black, blurRadius: 4),
+                      ],
                     ),
                   ),
-                  Expanded(
-                    child: Text(
-                      _currentEpisodeTitle ?? widget.title,
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        shadows: [
-                          Shadow(color: Colors.black, blurRadius: 4),
-                        ],
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      icon: Icon(
-                        _pipActive
-                            ? Icons.picture_in_picture_alt_rounded
-                            : Icons.picture_in_picture_rounded,
-                        color: _pipAvailable
-                            ? Colors.white
-                            : Colors.white.withValues(alpha: 0.35),
-                        size: 24,
-                      ),
-                      tooltip:
-                          _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
-                      onPressed: _pipAvailable ? _togglePiP : null,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+                if (_audioTracks.length > 1)
+                  _buildAudioButton()
+                else
+                  const SizedBox(width: 0),
+                if (_subtitleTracks.isNotEmpty)
+                  _buildSubtitleButton()
+                else
+                  const SizedBox(width: 0),
+                _buildEdgeIcon(
+                  icon: _pipActive
+                      ? Icons.picture_in_picture_alt_rounded
+                      : Icons.picture_in_picture_rounded,
+                  tooltip:
+                      _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
+                  enabled: _pipAvailable,
+                  onPressed: _pipAvailable ? _togglePiP : null,
+                ),
+              ],
             ),
           ),
         ),
 
-        // Zentraler Play/Pause-Button — an Windows-Player angelehnt:
-        // runder AppTheme.accent-Kreis (rot), weißes Icon. Deutlich
-        // kleiner als das vorherige 72px-Monstrum damit er nicht den
-        // halben Screen deckt.
+        // Zentrale Transport-Controls: -10s, Play/Pause, +10s. Play
+        // bleibt der rote AppTheme.accent-Kreis (Windows-Look), Skip-
+        // Buttons sind dezenter (nur Icon auf halbtransparenter Scheibe)
+        // damit der Fokus auf Play bleibt.
         Center(
-          child: GestureDetector(
-            onTap: () {
-              final c = _controller;
-              if (c == null) return;
-              if (_isPlaying) {
-                c.pause();
-              } else {
-                c.play();
-              }
-              _scheduleControlsHide();
-            },
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppTheme.accent.withValues(alpha: 0.9),
-                shape: BoxShape.circle,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildSkipButton(
+                icon: Icons.replay_10_rounded,
+                tooltip: '10 Sekunden zurück',
+                onPressed: () => _skipBy(const Duration(seconds: -10)),
               ),
-              child: Icon(
-                _isPlaying
-                    ? Icons.pause_rounded
-                    : Icons.play_arrow_rounded,
-                color: Colors.white,
-                size: 40,
+              const SizedBox(width: 32),
+              GestureDetector(
+                onTap: () {
+                  final c = _controller;
+                  if (c == null) return;
+                  if (_isPlaying) {
+                    c.pause();
+                  } else {
+                    c.play();
+                  }
+                  _scheduleControlsHide();
+                },
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accent.withValues(alpha: 0.9),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _isPlaying
+                        ? Icons.pause_rounded
+                        : Icons.play_arrow_rounded,
+                    color: Colors.white,
+                    size: 40,
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(width: 32),
+              _buildSkipButton(
+                icon: Icons.forward_10_rounded,
+                tooltip: '10 Sekunden vor',
+                onPressed: () => _skipBy(const Duration(seconds: 10)),
+              ),
+            ],
           ),
         ),
 
@@ -549,6 +647,317 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// 40×40 Icon-Button ohne Inner-Padding — sitzt damit optisch flush
+  /// am umgebenden Padding (left: 16 oder right: 16 der Top-Bar).
+  /// Zentrales Tap-Target bleibt ein komfortables 40×40.
+  Widget _buildEdgeIcon({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    bool enabled = true,
+  }) {
+    return SizedBox(
+      width: 40,
+      height: 40,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        icon: Icon(
+          icon,
+          color: enabled
+              ? Colors.white
+              : Colors.white.withValues(alpha: 0.35),
+          size: 26,
+        ),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  Widget _buildSkipButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.35),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, color: Colors.white, size: 32),
+      ),
+    );
+  }
+
+  Widget _buildAudioButton() {
+    return PopupMenuButton<int>(
+      tooltip: 'Audio-Spur',
+      color: AppTheme.surface,
+      icon: const Icon(Icons.audiotrack_rounded,
+          color: Colors.white, size: 24),
+      padding: EdgeInsets.zero,
+      onSelected: _setAudioTrack,
+      onOpened: _scheduleControlsHide,
+      itemBuilder: (_) => [
+        for (final t in _audioTracks)
+          PopupMenuItem<int>(
+            value: t.id,
+            child: Row(
+              children: [
+                Icon(
+                  t.isCurrent
+                      ? Icons.check_rounded
+                      : Icons.radio_button_unchecked_rounded,
+                  size: 18,
+                  color: t.isCurrent
+                      ? AppTheme.accent
+                      : AppTheme.textSecondary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    t.name,
+                    style: TextStyle(
+                      color: t.isCurrent
+                          ? AppTheme.textPrimary
+                          : AppTheme.textSecondary,
+                      fontWeight:
+                          t.isCurrent ? FontWeight.w600 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSubtitleButton() {
+    return PopupMenuButton<int>(
+      tooltip: 'Untertitel',
+      color: AppTheme.surface,
+      icon: const Icon(Icons.subtitles_rounded,
+          color: Colors.white, size: 24),
+      padding: EdgeInsets.zero,
+      onSelected: _setSubtitleTrack,
+      onOpened: _scheduleControlsHide,
+      itemBuilder: (_) => [
+        for (final t in _subtitleTracks)
+          PopupMenuItem<int>(
+            value: t.id,
+            child: Row(
+              children: [
+                Icon(
+                  t.isCurrent
+                      ? Icons.check_rounded
+                      : Icons.radio_button_unchecked_rounded,
+                  size: 18,
+                  color: t.isCurrent
+                      ? AppTheme.accent
+                      : AppTheme.textSecondary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    t.name,
+                    style: TextStyle(
+                      color: t.isCurrent
+                          ? AppTheme.textPrimary
+                          : AppTheme.textSecondary,
+                      fontWeight:
+                          t.isCurrent ? FontWeight.w600 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// "Nächste Folge"-Overlay mit Countdown-Button — rechts unten
+  /// eingeblendet ab 95 % Fortschritt. Klick auf den Button startet
+  /// sofort die nächste Folge, "Abspann ansehen" unterdrückt den
+  /// Auto-Skip. Bei 99.5 % feuert `_checkNearEnd` den Auto-Skip
+  /// wenn `_watchingCredits` nicht gesetzt ist.
+  Widget _buildNextEpisodeOverlay(BuildContext context) {
+    final nextEp = _lookupNextEpisode();
+    if (nextEp == null) return const SizedBox.shrink();
+    return Positioned(
+      bottom: 110,
+      right: 24,
+      child: AnimatedOpacity(
+        opacity: _showNextEpisode ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 300),
+        child: IgnorePointer(
+          ignoring: !_showNextEpisode,
+          child: Container(
+            width: 300,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.surface.withValues(alpha: 0.95),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: AppTheme.accent.withValues(alpha: 0.3),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  blurRadius: 20,
+                  spreadRadius: 2,
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.skip_next_rounded,
+                        color: AppTheme.accent, size: 18),
+                    const SizedBox(width: 6),
+                    Text(
+                      _watchingCredits
+                          ? 'Nächste Folge nach dem Abspann'
+                          : 'Nächste Folge',
+                      style: const TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  nextEp.fullDisplayName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (!_watchingCredits) ...[
+                  _buildCountdownButton(),
+                  const SizedBox(height: 6),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: () {
+                        setState(() => _watchingCredits = true);
+                      },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.textSecondary,
+                        side: const BorderSide(
+                            color: AppTheme.textMuted, width: 1),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                      ),
+                      child: const Text('Abspann ansehen',
+                          style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ],
+                if (_watchingCredits)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        _completionHandled = true;
+                        _playNextEpisode();
+                      },
+                      icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                      label: const Text('Jetzt abspielen'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Button, dessen Hintergrund von links nach rechts grau füllt
+  /// während der Countdown läuft (0 → 1). Analog zum Windows-Player.
+  Widget _buildCountdownButton() {
+    final progress = _countdownProgress;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: SizedBox(
+        width: double.infinity,
+        height: 38,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Row(
+                children: [
+                  if (progress > 0)
+                    Expanded(
+                      flex: (progress * 1000).round().clamp(0, 1000),
+                      child: Container(color: const Color(0xFFBDBDBD)),
+                    ),
+                  Expanded(
+                    flex: ((1.0 - progress) * 1000).round().clamp(0, 1000),
+                    child: Container(color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  _completionHandled = true;
+                  _playNextEpisode();
+                },
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.play_arrow_rounded,
+                        size: 18, color: Colors.black),
+                    SizedBox(width: 6),
+                    Text(
+                      'Nächste Folge',
+                      style: TextStyle(
+                        color: Colors.black,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
