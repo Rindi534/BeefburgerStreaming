@@ -282,26 +282,19 @@ class VLCPiPCoordinator: NSObject {
     /// gegen CoreMedias internen Frame-Scheduler sind und bei 10Hz-
     /// Dauerfeuer gab's Crash-Reports.
     private var lastSyncedRate: Float64 = -1
-    private var lastSyncedMs: Int32 = -1
     private func syncTimebaseToPlayer() {
         guard let tb = displayLayer.controlTimebase,
               let player = mediaPlayer else { return }
-        let playerMs = max(0, player.time.intValue)
         let rate: Float64 = player.isPlaying ? 1.0 : 0.0
 
-        // Rate nur bei echter Änderung setzen.
+        // NUR Rate syncen, NICHT die Zeit. Seit v1.5.19 leiten wir PTS
+        // aus CMTimebaseGetTime ab → Timebase ist "source of truth"
+        // für die Frame-Timeline und darf nicht gegen player.time
+        // zurückgebogen werden (das hatte v1.5.14–v1.5.18 gemacht und
+        // damit den PTS-Flow gegen sich selbst laufen lassen).
         if rate != lastSyncedRate {
             CMTimebaseSetRate(tb, rate: rate)
             lastSyncedRate = rate
-        }
-
-        // Zeit nur korrigieren wenn der Drift größer als 500ms ist —
-        // sonst läuft die Timebase selbst mit und wir würden sie bei
-        // jedem Tick zurückbiegen.
-        if abs(playerMs - lastSyncedMs) > 500 {
-            let target = CMTime(value: CMTimeValue(playerMs), timescale: 1000)
-            CMTimebaseSetTime(tb, time: target)
-            lastSyncedMs = playerMs
         }
     }
 
@@ -348,9 +341,13 @@ class VLCPiPCoordinator: NSObject {
             return
         }
         if let buffer = sampleBuffer(from: image) {
-            if displayLayer.status == .failed {
-                displayLayer.flush()
-            }
+            // KEIN flush() bei .failed mehr — Flush setzt die Layer in
+            // den Idle-State zurück, was isPictureInPicturePossible auf
+            // false kippt (kurzzeitig). Resultat: PiP-Button flickerte
+            // im 1-2s-Takt (v1.5.18). Wenn die Layer wirklich failed
+            // ist, bringt der nächste enqueue sie zurück; andernfalls
+            // war der Flush unnötig und hat nur den Possible-State
+            // zerschossen.
             displayLayer.enqueue(buffer)
         }
         snapshotInFlight = false
@@ -406,15 +403,29 @@ class VLCPiPCoordinator: NSObject {
             formatDescriptionOut: &formatDescription)
         guard let formatDesc = formatDescription else { return nil }
 
-        // PTS aus der VLC-Player-Position ableiten, nicht aus HostTime.
-        // iOS matcht die Frames gegen displayLayer.controlTimebase;
-        // mit einer Timebase, die mit Rate 1.0 ab 0 läuft, müssen die
-        // PTS in derselben Timeline liegen. VLC liefert Position in
-        // ms — konvertieren + auf aktuellem Stand halten.
-        let playerMs = mediaPlayer?.time.intValue ?? 0
-        let pts = CMTime(
-            value: CMTimeValue(max(0, playerMs)),
-            timescale: 1000)
+        // PTS AUS DER TIMEBASE der displayLayer selbst ableiten. Die
+        // Timebase läuft gegen CMClockGetHostTimeClock() mit Rate 1.0;
+        // wenn wir PTS aus player.time (Video-Position in ms seit
+        // Beginn) nehmen, liegen die Frames in einer komplett anderen
+        // Timeline (Host-Sekunden-seit-Boot vs. Video-ms-seit-Start).
+        // iOS hielt die Frames dann für uralt → Layer "nicht aktiv" →
+        // isPictureInPicturePossible oszillierte im 1-2s-Takt und der
+        // PiP-Button blinkte (v1.5.18).
+        //
+        // Stattdessen: PTS = aktuelle Timebase-Zeit + 1 Frame Lead,
+        // damit die Layer den Frame SOFORT als "current" ansieht.
+        // Der tatsächliche Video-Content-Zeitstempel ist für iOS
+        // irrelevant, wir müssen nur monotone, timebase-konsistente
+        // PTS liefern.
+        let now: CMTime
+        if let tb = displayLayer.controlTimebase {
+            now = CMTimebaseGetTime(tb)
+        } else {
+            now = CMClockGetTime(CMClockGetHostTimeClock())
+        }
+        let pts = CMTimeAdd(
+            now,
+            CMTime(value: 1, timescale: CMTimeScale(captureFPS)))
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(captureFPS)),
             presentationTimeStamp: pts,
