@@ -197,13 +197,17 @@ class _IOSVLCPlayerViewState extends State<IOSVLCPlayerView> {
       creationParams: args,
       creationParamsCodec: const StandardMessageCodec(),
       onPlatformViewCreated: _onCreated,
-      // VLC's drawable UIView muss Touch-Events selbst empfangen
-      // können (eingebaute Gesture-Handler, Tap zum Show/Hide der
-      // eigenen internen Chrome falls wir die mal enablen). Im
-      // aktuellen Setup haben wir noch keine eigene Chrome; sobald
-      // wir die auf Flutter-Seite bauen, bleibt dieses Set leer damit
-      // Flutter die Gesten dominiert.
-      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+      // EagerGestureRecognizer: Flutter "claimed" alle Touches sofort,
+      // bevor VLCs UIView sie sehen kann. Ohne das verschlucken die
+      // iOS-System-Gesten (oder die leere VLCVideoView, die trotzdem
+      // als UIResponder zählt) unsere Taps — dann bleibt der Tap-
+      // Catcher im Screen darüber stumm und Controls kommen nach dem
+      // Auto-Hide nicht mehr zurück.
+      gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+        Factory<OneSequenceGestureRecognizer>(
+          () => EagerGestureRecognizer(),
+        ),
+      },
     );
   }
 

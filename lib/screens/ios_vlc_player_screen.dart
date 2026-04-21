@@ -247,39 +247,65 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Wichtig: Der UiKitView mit VLC's drawable-UIView schluckt alle
+    // Touch-Events auf iOS weil `gestureRecognizers` leer ist. Ein
+    // GestureDetector WRAPPER um den Stack kriegt die Taps auf den
+    // Videobereich deshalb nie. Fix: transparenter Layer ÜBER dem
+    // UiKitView als dedicated tap-catcher. Der liegt unter dem
+    // Controls-Overlay (damit sichtbare Buttons weiterhin funktionieren)
+    // und fängt alles ab was sonst in VLC verschwinden würde.
     return Scaffold(
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: _toggleControls,
-        behavior: HitTestBehavior.opaque,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: IOSVLCPlayerView(
-                filePath: widget.filePath,
-                subtitlePath: widget.subtitlePath,
-                startPosition: widget.startPosition,
-                onReady: _onReady,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: IOSVLCPlayerView(
+              filePath: widget.filePath,
+              subtitlePath: widget.subtitlePath,
+              startPosition: widget.startPosition,
+              onReady: _onReady,
+            ),
+          ),
+
+          // Transparenter Tap-Catcher. Nur aktiv wenn Controls gerade
+          // ausgeblendet sind — sobald sie sichtbar sind, lässt er Taps
+          // durchfallen damit die Buttons reagieren. `translucent`
+          // (nicht `opaque`) damit Gesten die durch IgnorePointer der
+          // Controls geblockt werden trotzdem hier ankommen.
+          Positioned.fill(
+            child: IgnorePointer(
+              ignoring: _controlsVisible,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleControls,
               ),
             ),
+          ),
 
-            // Controls-Overlay — minimal: Play/Pause + Scrubber +
-            // Close. Kein Volume (iOS Hardware-Tasten reichen), kein
-            // Fullscreen-Toggle (sind ja schon vollflächig), kein
-            // Speed-Picker (kommt später wenn nötig).
-            AnimatedOpacity(
-              opacity: _controlsVisible ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 250),
-              child: IgnorePointer(
-                ignoring: !_controlsVisible,
+          // Controls-Overlay — minimal: Play/Pause + Scrubber +
+          // Close. Kein Volume (iOS Hardware-Tasten reichen), kein
+          // Fullscreen-Toggle (sind ja schon vollflächig), kein
+          // Speed-Picker (kommt später wenn nötig).
+          AnimatedOpacity(
+            opacity: _controlsVisible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: IgnorePointer(
+              ignoring: !_controlsVisible,
+              // GestureDetector um das Overlay selbst: Tap auf den
+              // halbtransparenten Bereich (nicht auf Buttons) blendet
+              // die Controls wieder aus. Symmetrisch zum Verhalten von
+              // AVPlayerViewController.
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _toggleControls,
                 child: _buildControlsOverlay(context),
               ),
             ),
+          ),
 
-            if (_playbackError != null)
-              Positioned.fill(child: _buildErrorOverlay()),
-          ],
-        ),
+          if (_playbackError != null)
+            Positioned.fill(child: _buildErrorOverlay()),
+        ],
       ),
     );
   }

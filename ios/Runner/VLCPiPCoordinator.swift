@@ -98,14 +98,16 @@ class VLCPiPCoordinator: NSObject {
         self.mediaPlayer = mediaPlayer
         self.hostView = hostView
 
-        // Die Sample-Buffer-Layer muss Teil einer sichtbaren Layer-Hierarchie
-        // sein damit AVPictureInPictureController sie akzeptiert. Wir
-        // legen sie als 1×1-Pixel unsichtbare Layer unter die VLC-
-        // Drawable-View — unsichtbar wird sie durch 0 Opacity + Größe 1,
-        // aber iOS "sieht" sie trotzdem in der Hierarchie und das reicht.
-        displayLayer.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        // Die Sample-Buffer-Layer muss Teil einer sichtbaren Layer-
+        // Hierarchie in sinnvoller Größe sein, sonst lehnt iOS sie
+        // als PiP-Quelle ab ("isPictureInPicturePossible" bleibt
+        // false). Wir legen sie vollflächig unter die VLC-Drawable-
+        // View und machen sie mit Opacity 0 unsichtbar — sichtbar
+        // wird weiterhin nur VLCs Drawable, aber iOS hat jetzt eine
+        // echte Layer mit echter Größe und echtem Content-Flow.
+        displayLayer.frame = hostView.bounds
         displayLayer.opacity = 0
-        hostView.layer.addSublayer(displayLayer)
+        hostView.layer.insertSublayer(displayLayer, at: 0)
 
         // AVAudioSession muss .playback sein damit PiP und
         // Background-Audio überhaupt erlaubt werden. NativePlayerPlugin
@@ -128,6 +130,17 @@ class VLCPiPCoordinator: NSObject {
         )
         let ctrl = AVPictureInPictureController(contentSource: source)
         ctrl.delegate = self
+        // Auto-PiP beim App-Hintergrund — genau das was der User
+        // erwartet wenn er aus der App rausswipet. iOS triggert PiP
+        // automatisch SOBALD:
+        //   1. canStartPictureInPictureAutomaticallyFromInline = true
+        //   2. Die App ist "actively playing inline video" — d.h.
+        //      die Sample-Buffer-Layer muss AKTIV Frames enqueuen,
+        //      nicht erst wenn der User den PiP-Button drückt.
+        // Deshalb starten wir den Capture-Loop schon in attach(),
+        // nicht erst in startPiP(). Ist auch kein Performance-Problem
+        // weil saveVideoSnapshot bei 10 Hz unter 5 ms CPU liegt.
+        ctrl.canStartPictureInPictureAutomaticallyFromInline = true
         self.pipController = ctrl
 
         // iOS meldet über isPictureInPicturePossible wann alles bereit
@@ -140,6 +153,12 @@ class VLCPiPCoordinator: NSObject {
         ) { [weak self] controller, _ in
             self?.onPiPAvailabilityChanged?(controller.isPictureInPicturePossible)
         }
+
+        // Capture sofort starten — für Auto-PiP muss der Frame-Flow
+        // VOR dem Backgrounding laufen, sonst registriert iOS das
+        // nicht als "inline video playback" und ignoriert den
+        // canStartPictureInPictureAutomaticallyFromInline-Hint.
+        startCapture()
     }
 
     func detach() {
@@ -170,10 +189,10 @@ class VLCPiPCoordinator: NSObject {
             NSLog("[VLCPiP] startPiP aber isPictureInPicturePossible=false — Abbruch")
             return
         }
-        // Vor dem Start brauchen wir mindestens einen Frame in der
-        // Layer, sonst zeigt iOS kurz einen Flash. Einmal synchron ziehen.
+        // Capture läuft bereits seit attach() — nur synchron einen
+        // frischen Frame ziehen damit der erste PiP-Frame nicht der
+        // letzte stale Snapshot ist.
         captureOneFrame()
-        startCapture()
         ctrl.startPictureInPicture()
     }
 
@@ -409,7 +428,9 @@ extension VLCPiPCoordinator: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStopPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        stopCapture()
+        // NICHT stopCapture() — wir lassen den Frame-Flow weiterlaufen
+        // damit ein zweiter Auto-PiP-Trigger (z.B. User kommt zurück
+        // und wechselt gleich wieder weg) direkt wieder greift.
         onPiPStateChanged?(false)
     }
 
@@ -418,7 +439,6 @@ extension VLCPiPCoordinator: AVPictureInPictureControllerDelegate {
         failedToStartPictureInPictureWithError error: Error
     ) {
         NSLog("[VLCPiP] failedToStartPictureInPicture: \(error)")
-        stopCapture()
         onPiPStateChanged?(false)
     }
 }
