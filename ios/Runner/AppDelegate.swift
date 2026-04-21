@@ -20,5 +20,15 @@ import UIKit
         .registrar(forPlugin: "NativePlayerPlugin") {
       NativePlayerPlugin.register(with: registrar)
     }
+
+    // Second video backend: MobileVLCKit-based player for container/
+    // codec combinations that AVPlayer can't decode (.mkv, .avi, …).
+    // Registered under a distinct viewType — Dart picks the right one
+    // based on file extension. Two factories coexist peacefully because
+    // each owns its own MethodChannel namespace.
+    if let registrar = engineBridge.pluginRegistry
+        .registrar(forPlugin: "VLCPlayerPlugin") {
+      VLCPlayerPlugin.register(with: registrar)
+    }
   }
 }

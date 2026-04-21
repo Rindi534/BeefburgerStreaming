@@ -1,0 +1,80 @@
+# Podfile für BeefburgerStreaming iOS/iPadOS build.
+#
+# Bis v1.5.11 hat Flutter den Podfile auf dem CI-Runner selbst generiert
+# (siehe .github/workflows/ios-build.yml). Seit v1.5.12 brauchen wir
+# MobileVLCKit als Extra-Dependency für den "Plan B"-Pfad: .mkv/.avi-
+# Dateien werden durch VLCKit gespielt statt durch AVPlayer, UND dessen
+# eingebaute AVPictureInPictureController-Integration gibt uns endlich
+# Picture-in-Picture auch für diese Container (Apples eigener AVPlayer
+# kann das grundsätzlich nicht, weil er nur MP4/MOV/M4V parst).
+#
+# Warum MobileVLCKit statt eigener libmpv+AVSampleBufferDisplayLayer-
+# Pipeline? Wir haben keinen Mac und damit keinen Xcode-Debugger.
+# Jeder Fix kostet einen GitHub-Actions-Rebuild + Sideload-Zyklus. In
+# diesem Constraint ist fremder, gepflegter, von Profis getesteter Code
+# drastisch billiger als selbstgebaut.
+
+platform :ios, '13.0'
+
+# CocoaPods-Analytics verlangsamt den Build via synchroner Netzwerk-
+# Calls an Segment — deaktivieren.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug'   => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(
+    File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. " \
+          "If you're running pod install manually, make sure flutter " \
+          "pub get is executed first."
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}."
+end
+
+require File.expand_path(
+  File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  # MobileVLCKit wird als dynamisches Framework ausgeliefert und
+  # verlangt use_frameworks!. Flutter-Plugins (media_kit, path_provider,
+  # url_launcher, ...) funktionieren damit weiterhin — Apple hat den
+  # alten static-lib-only Pfad auf Swift-Plugins eh nie unterstützt.
+  use_frameworks!
+  # Manche transitive Cocoa-Pods sind nicht als Module deklariert und
+  # brechen sonst den Build, wenn sie aus Swift importiert werden.
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+
+  # MobileVLCKit 3.5.x = letzte stabile Major-Reihe vor dem
+  # Migrations-Schritt zu VLCKit 4.x. Hat seit 3.5.0 Picture-in-Picture
+  # via AVPictureInPictureController.ContentSource(sampleBufferDisplay…
+  # eingebaut — genau das was wir brauchen.
+  pod 'MobileVLCKit', '~> 3.5.1'
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+
+    # Einige Pods (inkl. MobileVLCKit-interne Dependencies) erben einen
+    # zu niedrigen Deployment-Target-Default. Heben wir hart auf 13.0
+    # damit die Xcode-Warnings nicht den Build-Log fluten.
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+    end
+  end
+end

@@ -14,6 +14,7 @@ import '../services/fullscreen_service.dart';
 import '../services/thumbnail_service.dart';
 import 'settings_screen.dart';
 import 'ios_player_screen.dart';
+import 'ios_vlc_player_screen.dart';
 
 /// Platform-dispatching player entry point.
 ///
@@ -56,13 +57,15 @@ class PlayerScreen extends StatelessWidget {
   });
 
   /// File extensions that AVPlayer (iOS system player) cannot decode
-  /// natively. For these we fall back to the media_kit/libmpv-based
-  /// desktop player on iOS — users lose PiP + AirPlay for those files
-  /// but at least they play at all. MP4/MOV/M4V keep going through the
-  /// native path so the PiP story stays intact for well-behaved files.
+  /// natively. For these we route through the MobileVLCKit backend on
+  /// iOS (IOSVLCPlayerScreen) — same process, same app, different
+  /// decoder. PiP support for that path lands in Session 2; for now
+  /// the tradeoff is: these files play (they didn't before), but
+  /// without PiP/AirPlay. MP4/MOV/M4V keep going through AVPlayer so
+  /// the PiP story stays intact for well-behaved files.
   static const _avPlayerUnsupported = {'.mkv', '.avi', '.iso', '.wmv', '.flv'};
 
-  bool get _useDesktopFallbackOnIOS {
+  bool get _useVLCOnIOS {
     final lower = filePath.toLowerCase();
     for (final ext in _avPlayerUnsupported) {
       if (lower.endsWith(ext)) return true;
@@ -72,7 +75,22 @@ class PlayerScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (Platform.isIOS && !_useDesktopFallbackOnIOS) {
+    if (Platform.isIOS) {
+      if (_useVLCOnIOS) {
+        return IOSVLCPlayerScreen(
+          filePath: filePath,
+          title: title,
+          episodeTitle: episodeTitle,
+          mediaId: mediaId,
+          subtitlePath: subtitlePath,
+          nextEpisodeFilePath: nextEpisodeFilePath,
+          nextEpisodeTitle: nextEpisodeTitle,
+          nextEpisodeSubtitlePath: nextEpisodeSubtitlePath,
+          startPosition: startPosition,
+          allEpisodes: allEpisodes,
+          currentEpisodeIndex: currentEpisodeIndex,
+        );
+      }
       return IOSPlayerScreen(
         filePath: filePath,
         title: title,
