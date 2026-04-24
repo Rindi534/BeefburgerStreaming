@@ -88,6 +88,20 @@ class VLCPiPCoordinator: NSObject {
     /// dauerhaft auf false locked.
     private var firstFrameEnqueued: Bool = false
 
+    /// Zeitpunkt bis zu dem wir nach einem replaceMedia() aggressiv
+    /// weitersnapshotten — auch wenn `hasVideoOut` noch false ist.
+    /// Grund: wenn Auto-Next-Episode während aktivem PiP feuert, stoppt
+    /// VLC die alte Media, der Video-Output-Handle flippt kurz auf
+    /// false, hasVideoOut kommt im Background-PiP-Modus u.U. nicht
+    /// sofort zurück, und die displayLayer behält den LETZTEN Frame
+    /// der alten Folge stehen — User sieht "PiP freezt mit letzter
+    /// Szene der alten Folge" (v1.5.29 Bugreport). In diesem Zeit-
+    /// fenster bumpen wir den hasVideoOut-Gate ab und vertrauen auf
+    /// den Obj-C-Wrapper VLCSafeSaveSnapshot, der etwaige NSExceptions
+    /// abfängt. Zusätzlich wird zu Beginn die Layer geflusht, damit
+    /// PiP NICHT die alte Szene zeigt während das neue Video hochfährt.
+    private var mediaSwapDeadline: TimeInterval = 0
+
     override init() {
         self.displayLayer = AVSampleBufferDisplayLayer()
         self.displayLayer.videoGravity = .resizeAspect
@@ -227,6 +241,24 @@ class VLCPiPCoordinator: NSObject {
         guard pipController == nil, firstFrameEnqueued else { return }
         NSLog("[VLCPiP] Erster Frame enqueued → createPiPController")
         createPiPController()
+    }
+
+    /// Wird von VLCPlayerPlugin.replaceMedia() direkt VOR dem eigentlichen
+    /// Medienwechsel aufgerufen. Startet ein ~3s-Recovery-Fenster in dem
+    /// (a) der letzte Frame der alten Folge aus der displayLayer ent-
+    /// fernt wird (sonst "freezt" PiP auf der Schlussszene) und (b) der
+    /// hasVideoOut-Gate in captureOneFrame umgangen wird, damit wir die
+    /// ersten Frames der neuen Folge einfangen sobald der Decoder läuft.
+    func mediaWillChange() {
+        mediaSwapDeadline = Date().timeIntervalSince1970 + 3.0
+        // Stale Frame entfernen. flushAndRemoveImage() reißt NICHT die
+        // PiP-Session ab — iOS zeigt nur kurz einen schwarzen Viewport,
+        // bis der erste neue Frame reinkommt. Deutlich angenehmer als
+        // "Endbild der letzten Folge bleibt eingefroren".
+        if displayLayer.status != .failed {
+            displayLayer.flushAndRemoveImage()
+        }
+        NSLog("[VLCPiP] mediaWillChange: swap-window=3s, layer flushed")
     }
 
     func detach() {
@@ -372,7 +404,15 @@ class VLCPiPCoordinator: NSObject {
         // hasVideoOut wird von VLCKit auf true gesetzt sobald der
         // libvlc video_output aktiv ist. Das ist der einzige zuverlässige
         // Ready-Indikator. Siehe Crash-Report v1.5.16 (Runner 865BAEB7).
-        guard player.hasVideoOut else {
+        // Normalfall: hasVideoOut=true ist der harte Gate. Ausnahme:
+        // während des Media-Swap-Recovery-Fensters (siehe mediaWillChange)
+        // probieren wir auch bei hasVideoOut=false weiter, weil der
+        // Video-Output-Handle beim stop/play-Zyklus von VLC kurz flippt.
+        // VLCSafeSaveSnapshot fängt NSExceptions sicher ab, daher kein
+        // Crash-Risiko durch das Relaxen.
+        let inSwapWindow =
+            Date().timeIntervalSince1970 < mediaSwapDeadline
+        if !player.hasVideoOut && !inSwapWindow {
             logBlockReasonOnce("hasVideoOut=false (state=\(player.state.rawValue))")
             return
         }

@@ -308,6 +308,17 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             }
             let sub = args["subtitleUrl"] as? String
             let start = (args["startSeconds"] as? Double) ?? 0
+            // PiP-Koordinator VORHER informieren: flushed den stale
+            // Frame der alten Folge aus der sampleBufferDisplayLayer
+            // und öffnet ein 3s-Recovery-Fenster in dem der
+            // hasVideoOut-Gate relaxiert ist. Ohne diesen Aufruf bleibt
+            // PiP bei Auto-Next-Episode auf der letzten Szene der alten
+            // Folge eingefroren während das neue Audio im Hintergrund
+            // schon läuft (User-Bugreport v1.5.29).
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.mediaWillChange()
+            }
             loadMedia(urlString: media,
                       subtitleUrl: sub,
                       startSeconds: start)
