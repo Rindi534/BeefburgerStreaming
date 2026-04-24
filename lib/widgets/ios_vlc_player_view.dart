@@ -179,14 +179,22 @@ class IOSVLCPlayerController {
     }).toList();
   }
 
-  /// VLCKit hängt gern einen Sprach-Code in eckigen Klammern hinter den
-  /// Track-Namen: "English [English]" oder "Deutsch [ger]". Das ist für
-  /// die UI redundant — ab dem " [" abschneiden, damit im Menü nur der
-  /// reine Name steht.
+  /// VLCKit liefert Track-Namen in Formaten wie "English [eng]",
+  /// "English - [eng]" oder "Track 1 - English [eng]". Wir wollen in
+  /// der UI nur den Roh-Sprachnamen ("English"). Reihenfolge:
+  ///   1) Klammer-Suffix " [...]" abschneiden
+  ///   2) verbleibenden trailing-Separator " -" / "–" / "—" trimmen
+  ///   3) VLC's "Disable" auf "Aus" übersetzen (User-Feedback 1.5.26)
   static String _cleanTrackName(String raw) {
-    final idx = raw.indexOf(' [');
-    if (idx <= 0) return raw.trim();
-    return raw.substring(0, idx).trim();
+    var s = raw;
+    final bracket = s.indexOf(' [');
+    if (bracket > 0) s = s.substring(0, bracket);
+    s = s.trim();
+    while (s.endsWith('-') || s.endsWith('–') || s.endsWith('—')) {
+      s = s.substring(0, s.length - 1).trimRight();
+    }
+    if (s.toLowerCase() == 'disable') return 'Aus';
+    return s;
   }
 
   Future<bool> queryPiPPossible() async {

@@ -110,6 +110,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   // angehalten damit die Controls während des Seekens sichtbar bleiben.
   bool _isScrubbing = false;
 
+  // Nur für Slider + Zeitangaben. Wird bei jedem VLC-Position-Event
+  // geupdated ohne dass setState den ganzen Screen rebuildet — der
+  // ValueListenableBuilder im Bottom-Bar rebuildet nur seinen Subtree.
+  final ValueNotifier<Duration> _positionNotifier =
+      ValueNotifier(Duration.zero);
+  final ValueNotifier<Duration> _durationNotifier =
+      ValueNotifier(Duration.zero);
+
   // Mutable per-episode state — analog zum AVPlayer-Pfad damit
   // watch-progress nach einer in-place Episode-Umstellung auf den
   // richtigen Datensatz schreibt.
@@ -162,6 +170,9 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
     ]);
+
+    _positionNotifier.dispose();
+    _durationNotifier.dispose();
 
     super.dispose();
   }
@@ -237,13 +248,20 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
         _pendingSeekTarget = null;
         _pendingSeekAt = null;
       }
-      setState(() => _position = pos);
+      // Position für _checkNearEnd + Skip-Base merken, aber ohne
+      // setState — der Slider und die Zeitangaben rendern sich
+      // separat via _positionNotifier (ValueListenableBuilder). Das
+      // spart bei 10 Hz den kompletten Rebuild der Top-/Bottom-Bar,
+      // der gefühlt als "ruckelig" beim Scrubben wahrnehmbar war.
+      _position = pos;
+      _positionNotifier.value = pos;
       _checkNearEnd(pos);
     });
 
     _durationSub = ctrl.durationStream.listen((dur) {
       if (!mounted) return;
-      setState(() => _duration = dur);
+      _duration = dur;
+      _durationNotifier.value = dur;
       // Dauer kommt erst nach "playing"-State aus VLC — guter Moment
       // um Audio- und Untertitel-Spuren zu enumerieren (der Decoder
       // hat bis dahin alle Streams gesehen).
@@ -356,8 +374,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _pendingSeekTarget = clamped;
     _pendingSeekAt = now;
     // Sofort visuell bestätigen — sonst wirkt der Button "tot" bis VLC
-    // antwortet.
-    setState(() => _position = clamped);
+    // antwortet. Nur Notifier setzen, nicht setState → rebuild bleibt
+    // auf Slider-Subtree beschränkt.
+    _position = clamped;
+    _positionNotifier.value = clamped;
     await ctrl.seek(clamped);
     _scheduleControlsHide();
   }
@@ -422,6 +442,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       _completionHandled = false;
       _position = Duration.zero;
       _duration = Duration.zero;
+      _positionNotifier.value = Duration.zero;
+      _durationNotifier.value = Duration.zero;
       // Countdown-Overlay für neue Folge zurücksetzen.
       _showNextEpisode = false;
       _watchingCredits = false;
@@ -520,10 +542,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           right: 0,
           child: Container(
             padding: EdgeInsets.only(
-              top: MediaQuery.of(context).padding.top + 4,
-              bottom: 12,
-              left: 20,
-              right: 20,
+              top: MediaQuery.of(context).padding.top + 12,
+              bottom: 18,
+              left: 28,
+              right: 28,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -685,10 +707,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           bottom: 0,
           child: Container(
             padding: const EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 24,
-              bottom: 8,
+              left: 28,
+              right: 28,
+              top: 28,
+              bottom: 18,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -700,90 +722,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 ],
               ),
             ),
-            child: Row(
-              children: [
-                Text(
-                  _formatDuration(_position),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-                Expanded(
-                  child: SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 3,
-                      thumbShape: const RoundSliderThumbShape(
-                        enabledThumbRadius: 7,
-                      ),
-                      overlayShape: const RoundSliderOverlayShape(
-                        overlayRadius: 16,
-                      ),
-                    ),
-                    child: Slider(
-                      value: _sliderValue(),
-                      onChangeStart: (_) {
-                        // Auto-Hide aushebeln während des Scrubbens,
-                        // sonst blendet die Bar nach 3s mitten im Ziehen
-                        // aus — genau dann wenn man sie am dringendsten
-                        // braucht.
-                        _controlsHideTimer?.cancel();
-                        setState(() => _isScrubbing = true);
-                      },
-                      onChanged: (v) {
-                        if (_duration.inMilliseconds <= 0) return;
-                        setState(() {
-                          _position = Duration(
-                            milliseconds:
-                                (v * _duration.inMilliseconds).round(),
-                          );
-                        });
-                      },
-                      onChangeEnd: (v) {
-                        if (_duration.inMilliseconds <= 0) return;
-                        final target = Duration(
-                          milliseconds:
-                              (v * _duration.inMilliseconds).round(),
-                        );
-                        _pendingSeekTarget = target;
-                        _pendingSeekAt = DateTime.now();
-                        _controller?.seek(target);
-                        setState(() => _isScrubbing = false);
-                        _scheduleControlsHide();
-                      },
-                      activeColor: AppTheme.accent,
-                      inactiveColor: Colors.white24,
-                    ),
-                  ),
-                ),
-                Text(
-                  _formatDuration(_duration),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-                // Inline-Next-Episode-Button: wenn's eine nächste Folge
-                // gibt, ganz rechts in derselben Leiste — skipped zur
-                // nächsten Episode und markiert die aktuelle als
-                // abgeschlossen (Watch-Progress wird korrekt gesetzt
-                // durch _saveProgress(treatAsCompleted: true)).
-                if (_lookupNextEpisode() != null) ...[
-                  const SizedBox(width: 8),
-                  _buildEdgeIcon(
-                    icon: Icons.skip_next_rounded,
-                    tooltip: 'Nächste Folge',
-                    onPressed: () {
-                      _completionHandled = true;
-                      _saveProgress(treatAsCompleted: true);
-                      _playNextEpisode();
-                    },
-                  ),
-                ],
-              ],
-            ),
+            child: _buildScrubRow(context),
           ),
         ),
       ],
@@ -1064,10 +1003,119 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     );
   }
 
-  double _sliderValue() {
-    final d = _duration.inMilliseconds;
-    if (d <= 0) return 0;
-    return (_position.inMilliseconds / d).clamp(0.0, 1.0);
+  /// Baut Zeitangaben + Slider + (optional) Next-Episode-Icon.
+  /// Rebuildet nur sich selbst bei Position-Updates (via Nested
+  /// ValueListenableBuilder), nicht den gesamten Control-Overlay.
+  /// Der große 56×56 Next-Episode-Icon sitzt rechts außen, deutlich
+  /// größer als die Top-Bar-Buttons, wie User in 1.5.26 gewünscht.
+  Widget _buildScrubRow(BuildContext context) {
+    return ValueListenableBuilder<Duration>(
+      valueListenable: _durationNotifier,
+      builder: (ctx, duration, _) {
+        return ValueListenableBuilder<Duration>(
+          valueListenable: _positionNotifier,
+          builder: (ctx, position, _) {
+            final dMs = duration.inMilliseconds;
+            final value = dMs <= 0
+                ? 0.0
+                : (position.inMilliseconds / dMs).clamp(0.0, 1.0);
+            return Row(
+              children: [
+                Text(
+                  _formatDuration(position),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(
+                        enabledThumbRadius: 8,
+                      ),
+                      overlayShape: const RoundSliderOverlayShape(
+                        overlayRadius: 18,
+                      ),
+                    ),
+                    child: Slider(
+                      value: value,
+                      onChangeStart: (_) {
+                        _controlsHideTimer?.cancel();
+                        _isScrubbing = true;
+                      },
+                      onChanged: (v) {
+                        if (duration.inMilliseconds <= 0) return;
+                        // Nur den Notifier updaten → nur dieser Subtree
+                        // rebuildet (Slider + Zeit-Text). Früher rief
+                        // der Handler setState auf dem ganzen Screen
+                        // auf, was die Top-Bar inkl. Gradients jedesmal
+                        // rebuildete → spürbares Ruckeln.
+                        _positionNotifier.value = Duration(
+                          milliseconds:
+                              (v * duration.inMilliseconds).round(),
+                        );
+                      },
+                      onChangeEnd: (v) {
+                        if (duration.inMilliseconds <= 0) return;
+                        final target = Duration(
+                          milliseconds:
+                              (v * duration.inMilliseconds).round(),
+                        );
+                        _pendingSeekTarget = target;
+                        _pendingSeekAt = DateTime.now();
+                        _position = target;
+                        _positionNotifier.value = target;
+                        _controller?.seek(target);
+                        _isScrubbing = false;
+                        _scheduleControlsHide();
+                      },
+                      activeColor: AppTheme.accent,
+                      inactiveColor: Colors.white24,
+                    ),
+                  ),
+                ),
+                Text(
+                  _formatDuration(duration),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                if (_lookupNextEpisode() != null) ...[
+                  const SizedBox(width: 12),
+                  _buildNextEpisodeIcon(),
+                ],
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Größer als _buildEdgeIcon (56×56 statt 40×40), damit der
+  /// Nächste-Folge-Button neben der Zeitangabe deutlich hervortritt
+  /// — User-Feedback 1.5.26: der kleine 40er wirkte verloren.
+  Widget _buildNextEpisodeIcon() {
+    return SizedBox(
+      width: 56,
+      height: 56,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        iconSize: 36,
+        tooltip: 'Nächste Folge',
+        icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
+        onPressed: () {
+          _completionHandled = true;
+          _saveProgress(treatAsCompleted: true);
+          _playNextEpisode();
+        },
+      ),
+    );
   }
 
   String _formatDuration(Duration d) {

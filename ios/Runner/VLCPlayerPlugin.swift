@@ -213,12 +213,13 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
         let media = VLCMedia(url: url)
 
-        // Datei-Caching-Buffer (ms). Default ist ~300ms — auf iOS
-        // reicht das, zu hohe Werte haben in 1.5.24 den Pause/Play-
-        // Resume hörbar stottern lassen (Buffer musste erst wieder
-        // gefüllt werden). 1000ms ist ein konservativer Mittelweg
-        // zwischen "schneller Start" und "kein Audio-Glitch".
-        media.addOption(":file-caching=1000")
+        // Datei-Caching-Buffer (ms). Niedrig halten (300ms) damit
+        // Pause→Play-Resume nicht wartet bis der Buffer aufgefüllt ist
+        // — das war die Haupt-Ursache für den hörbaren Audio-Lag nach
+        // Pause in 1.5.25. Für lokale Dateien ist der Buffer ohnehin
+        // trivial zu füllen (Disk-I/O ist schneller als Real-Time-
+        // Playback), ein großer Vorrat bringt nichts außer Latenz.
+        media.addOption(":file-caching=300")
         // Untertitel-Rendering stabilisieren. Ohne festen Scale-Faktor
         // kalkuliert VLCKit die Glyph-Größe bei jedem Layout neu und
         // cached sie nicht zwischen Frames → das war die Ursache für
