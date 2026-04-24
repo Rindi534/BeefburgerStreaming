@@ -759,8 +759,16 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   }
 
   /// Gemeinsames Styling für beide Track-Menüs: dunkler Hintergrund,
-  /// weiße Schrift, ausgewählter Eintrag rot mit Häkchen (kein Radio-
-  /// Button — das hat der User explizit nicht gewollt).
+  /// weiße Schrift, ausgewählter Eintrag rot (kein Radio-Button).
+  ///
+  /// UX-Details die in 1.5.28 dazu kamen:
+  ///   * Liste ist scrollbar (wichtig wenn MKV >6-7 Spuren hat, vorher
+  ///     rauschte sie unten aus dem Screen raus)
+  ///   * Nach Tap auf einen Eintrag wird erst die rote Highlight-
+  ///     Animation gespielt (180ms) und dann geschlossen — vorher
+  ///     "schluckte" der sofortige Close den visuellen Feedback-Frame
+  ///   * 320ms Open-/Close-Transition mit ease-out statt Flutter-
+  ///     Default 250ms linear
   Future<int?> _showTrackMenu({
     required BuildContext context,
     required String title,
@@ -770,81 +778,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       context: context,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.45),
+      isScrollControlled: true,
+      transitionAnimationController: AnimationController(
+        vsync: Navigator.of(context),
+        duration: const Duration(milliseconds: 320),
+        reverseDuration: const Duration(milliseconds: 260),
+      ),
       builder: (ctx) {
-        return SafeArea(
-          top: false,
-          child: Container(
-            margin: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF121212),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.08),
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        color: AppTheme.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.4,
-                      ),
-                    ),
-                  ),
-                ),
-                ...tracks.map((t) {
-                  final selected = t.isCurrent;
-                  return InkWell(
-                    onTap: () => Navigator.of(ctx).pop(t.id),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            selected
-                                ? Icons.check_rounded
-                                : null,
-                            size: 20,
-                            color: selected
-                                ? AppTheme.accent
-                                : Colors.transparent,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              t.name,
-                              style: TextStyle(
-                                color: selected
-                                    ? AppTheme.accent
-                                    : Colors.white,
-                                fontSize: 15,
-                                fontWeight: selected
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }),
-                const SizedBox(height: 6),
-              ],
-            ),
-          ),
-        );
+        return _TrackMenuSheet(title: title, tracks: tracks);
       },
     );
   }
@@ -1086,7 +1027,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                   ),
                 ),
                 if (_lookupNextEpisode() != null) ...[
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 4),
                   _buildNextEpisodeIcon(),
                 ],
               ],
@@ -1097,13 +1038,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     );
   }
 
-  /// Größer als _buildEdgeIcon (56×56 statt 40×40), damit der
-  /// Nächste-Folge-Button neben der Zeitangabe deutlich hervortritt
-  /// — User-Feedback 1.5.26: der kleine 40er wirkte verloren.
+  /// 50×50 mit 36px Icon → die sichtbare rechte Kante (vertikaler
+  /// Strich von skip_next) sitzt exakt 35px vom Bildschirmrand wie der
+  /// PiP-Button oben rechts (40×40 Box mit 26px Icon). Das ergibt die
+  /// bündige Außenlinie die User in 1.5.27 bemängelt hat.
   Widget _buildNextEpisodeIcon() {
     return SizedBox(
-      width: 56,
-      height: 56,
+      width: 50,
+      height: 50,
       child: IconButton(
         padding: EdgeInsets.zero,
         iconSize: 36,
@@ -1169,6 +1111,132 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.accent,
                   foregroundColor: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Track-Menü als eigenes StatefulWidget damit wir lokalen State halten
+/// können: `_pendingId` markiert den gerade angetippten Eintrag rot,
+/// bevor das Sheet nach 180ms weggeschlossen wird. Das liefert den
+/// visuellen "ja ich hab's erwischt"-Frame den der User in 1.5.27
+/// vermisst hat.
+class _TrackMenuSheet extends StatefulWidget {
+  final String title;
+  final List<VlcTrack> tracks;
+
+  const _TrackMenuSheet({required this.title, required this.tracks});
+
+  @override
+  State<_TrackMenuSheet> createState() => _TrackMenuSheetState();
+}
+
+class _TrackMenuSheetState extends State<_TrackMenuSheet> {
+  int? _pendingId;
+
+  void _handleTap(int id) {
+    if (_pendingId != null) return; // Doppel-Tap ignorieren
+    setState(() => _pendingId = id);
+    // Kurzer Moment damit die Highlight-Farbe sichtbar wird bevor wir
+    // das Sheet wegklappen — reine UI-Politess.
+    Future.delayed(const Duration(milliseconds: 180), () {
+      if (!mounted) return;
+      Navigator.of(context).pop(id);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Max-Höhe 55% des Screens — reicht für ~10 Tracks ohne den
+    // Player komplett zu verdecken, und wird scrollbar darüber hinaus.
+    final maxHeight = MediaQuery.of(context).size.height * 0.55;
+    return SafeArea(
+      top: false,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: Container(
+          margin: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF121212),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.08),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    widget.title,
+                    style: const TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+              ),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.only(bottom: 6),
+                  itemCount: widget.tracks.length,
+                  itemBuilder: (ctx, i) {
+                    final t = widget.tracks[i];
+                    // Ist entweder schon aktiv (aus VLC) ODER grad per
+                    // Tap vorgemerkt — beides zeigt rot.
+                    final highlighted = t.isCurrent || _pendingId == t.id;
+                    return InkWell(
+                      onTap: () => _handleTap(t.id),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 140),
+                        curve: Curves.easeOut,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        color: _pendingId == t.id
+                            ? AppTheme.accent.withValues(alpha: 0.12)
+                            : Colors.transparent,
+                        child: Row(
+                          children: [
+                            Icon(
+                              highlighted ? Icons.check_rounded : null,
+                              size: 20,
+                              color: highlighted
+                                  ? AppTheme.accent
+                                  : Colors.transparent,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                t.name,
+                                style: TextStyle(
+                                  color: highlighted
+                                      ? AppTheme.accent
+                                      : Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: highlighted
+                                      ? FontWeight.w600
+                                      : FontWeight.w400,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
