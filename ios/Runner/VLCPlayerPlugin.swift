@@ -21,6 +21,7 @@ import Flutter
 import MobileVLCKit
 import UIKit
 import AVKit
+import AVFoundation
 
 // MARK: - Plugin registration
 
@@ -114,6 +115,22 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
         super.init()
 
+        // AVAudioSession auf "playback" fixieren und aktiv halten.
+        // Ohne diesen Call deaktiviert iOS die Session nach ein paar
+        // Sekunden Pause → beim Resume muss der AudioUnit erst wieder
+        // hochfahren, was den hörbaren Audio-Lag ~400-600ms produziert
+        // hat. Mit aktiver Session bleibt der AudioUnit primed.
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback,
+                                    options: [])
+            try session.setActive(true, options: [])
+        } catch {
+            // Nicht fatal — VLCKit fällt ohne unseren Setup auf den
+            // default Session-Mode zurück. Der Audio-Lag ist dann
+            // wieder da, aber Playback funktioniert.
+        }
+
         self.mediaPlayer.drawable = self.videoView
         self.mediaPlayer.delegate = self
 
@@ -196,22 +213,17 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
         let media = VLCMedia(url: url)
 
-        // Hardware-Decode via VideoToolbox explizit einschalten.
-        // MobileVLCKit lässt das per default OFF weil Simulator es
-        // nicht kann — auf echten Geräten ist's ein massiver Gewinn
-        // bei 1080p+ und HEVC.
-        media.addOption(":codec=videotoolbox")
-        // Datei-Caching-Buffer (ms). Höher = weniger hörbarer Audio-
-        // Glitch beim pause()/play(), weil VLC bei Resume mehr
-        // vorgecachete Samples hat und nicht erst nachlesen muss.
-        // 2500ms = guter Kompromiss zwischen RAM-Verbrauch und
-        // flüssigem Resume. v1.5.24 hochgezogen von 1500ms.
-        media.addOption(":file-caching=2500")
-        // v1.5.24 hatte :clock-jitter=0 / :clock-synchro=0 dazu
-        // genommen — damit wurden Untertitel unspielbar (starkes
-        // Flackern/Blinken, siehe Bug-Report). Rausgenommen; den
-        // Audio-Lag nach Pause/Play lösen wir stattdessen über ein
-        // explizites Re-Seek in handleMethodCall "play" (weiter unten).
+        // Datei-Caching-Buffer (ms). Default ist ~300ms — auf iOS
+        // reicht das, zu hohe Werte haben in 1.5.24 den Pause/Play-
+        // Resume hörbar stottern lassen (Buffer musste erst wieder
+        // gefüllt werden). 1000ms ist ein konservativer Mittelweg
+        // zwischen "schneller Start" und "kein Audio-Glitch".
+        media.addOption(":file-caching=1000")
+        // Untertitel-Rendering stabilisieren. Ohne festen Scale-Faktor
+        // kalkuliert VLCKit die Glyph-Größe bei jedem Layout neu und
+        // cached sie nicht zwischen Frames → das war die Ursache für
+        // das Flackern der Untertitel in v1.5.24/25.
+        media.addOption(":sub-text-scale=100")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
@@ -246,24 +258,13 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                                   result: @escaping FlutterResult) {
         switch call.method {
         case "play":
-            // VLCKit-Audio-Lag-Workaround: MobileVLCKit braucht nach
-            // einem pause() → play() auf iOS ~400–600 ms bis die
-            // AudioUnit wieder Samples rausschiebt (bekannter Bug, das
-            // Video läuft aber man hört erst mal nichts). Ein minimales
-            // Re-Seek auf die aktuelle Zeit forciert VLC dazu den
-            // Audio-Output neu zu primen — mit file-caching=2500
-            // reinflusht das die Samples ohne sichtbaren Sprung.
-            let wasPaused = mediaPlayer.state == .paused
+            // v1.5.25 hatte einen Re-Seek-Workaround für Audio-Lag nach
+            // Pause/Play — der hat aber einen sichtbaren Video-Hang
+            // produziert. Wieder raus; der Re-Seek-Sprung war schlimmer
+            // als der ursprüngliche Audio-Lag. Der verbleibende Lag
+            // kommt von der AVAudioSession-Reaktivierung und braucht
+            // einen anderen Fix (Audio-Session "keep-alive").
             mediaPlayer.play()
-            if wasPaused {
-                let t = mediaPlayer.time
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                    guard let self = self else { return }
-                    if self.mediaPlayer.state == .playing {
-                        self.mediaPlayer.time = t
-                    }
-                }
-            }
             result(nil)
         case "pause":
             mediaPlayer.pause()
@@ -457,7 +458,10 @@ extension VLCPlayerView: VLCMediaPlayerDelegate {
 
     func mediaPlayerTimeChanged(_ aNotification: Notification) {
         let now = Date().timeIntervalSince1970
-        if now - lastPositionEmit < 0.2 { return }
+        // 10 Hz (100ms) statt 5 Hz — Slider und Countdown-Animation
+        // wirken bei 5 Hz sichtbar gestuft. 10 Hz ist flüssig genug und
+        // belastet den EventChannel nicht.
+        if now - lastPositionEmit < 0.1 { return }
         lastPositionEmit = now
         let ms = mediaPlayer.time.intValue
         if ms >= 0 {

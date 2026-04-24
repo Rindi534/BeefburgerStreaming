@@ -95,6 +95,21 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
 
+  // Seek-Koaleszenz: wenn der User schnell mehrmals ±10s drückt, kommt
+  // die nächste position-Event aus VLC erst ~100ms später. Ohne
+  // Koaleszenz benutzt der zweite Skip noch _position (pre-erster-Skip)
+  // → landet wieder an der Ausgangsposition statt 20s weiter. Wir
+  // merken uns die zuletzt angefragte Zielposition und rechnen weitere
+  // Skips darauf drauf, solange VLC noch nicht bestätigt hat.
+  Duration? _pendingSeekTarget;
+  DateTime? _pendingSeekAt;
+
+  // Slider-Scrubbing. Während true werden position-Events aus VLC
+  // ignoriert (sonst springt der Daumen beim Ziehen kurz auf die
+  // letzte bestätigte Position zurück), und der Auto-Hide-Timer ist
+  // angehalten damit die Controls während des Seekens sichtbar bleiben.
+  bool _isScrubbing = false;
+
   // Mutable per-episode state — analog zum AVPlayer-Pfad damit
   // watch-progress nach einer in-place Episode-Umstellung auf den
   // richtigen Datensatz schreibt.
@@ -203,6 +218,25 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
 
     _positionSub = ctrl.positionStream.listen((pos) {
       if (!mounted) return;
+      // Während der User scrubt: Position-Events ignorieren, sonst
+      // kämpft der Slider-Thumb mit VLC um den Ownership.
+      if (_isScrubbing) return;
+      // Pending-Seek-Koaleszenz: wenn wir selbst gerade einen Seek
+      // rausgeschickt haben und VLC noch mit alter Position rein-
+      // kommt, verwerfen. Fenster von 500ms deckt VLC's round-trip ab.
+      if (_pendingSeekTarget != null && _pendingSeekAt != null) {
+        final age = DateTime.now().difference(_pendingSeekAt!);
+        final closeEnough = (pos.inMilliseconds -
+                _pendingSeekTarget!.inMilliseconds)
+            .abs();
+        if (age < const Duration(milliseconds: 500) &&
+            closeEnough > 1500) {
+          return;
+        }
+        // VLC hat uns eingeholt — Pending-Marker löschen.
+        _pendingSeekTarget = null;
+        _pendingSeekAt = null;
+      }
       setState(() => _position = pos);
       _checkNearEnd(pos);
     });
@@ -301,13 +335,29 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   Future<void> _skipBy(Duration delta) async {
     final ctrl = _controller;
     if (ctrl == null) return;
-    final target = _position + delta;
+    // Basis ist entweder der letzte ungetroffene Seek-Target (wenn
+    // einer in den letzten 500ms losgeschickt wurde) oder die aktuelle
+    // Position. Ohne das kumuliert schnelles ±10s nicht sondern
+    // springt immer um nur 10s vom selben Punkt.
+    final now = DateTime.now();
+    final base = (_pendingSeekTarget != null &&
+            _pendingSeekAt != null &&
+            now.difference(_pendingSeekAt!) <
+                const Duration(milliseconds: 500))
+        ? _pendingSeekTarget!
+        : _position;
+    final target = base + delta;
     final clamped = Duration(
       milliseconds: target.inMilliseconds.clamp(
         0,
         _duration.inMilliseconds > 0 ? _duration.inMilliseconds : (1 << 31),
       ),
     );
+    _pendingSeekTarget = clamped;
+    _pendingSeekAt = now;
+    // Sofort visuell bestätigen — sonst wirkt der Button "tot" bis VLC
+    // antwortet.
+    setState(() => _position = clamped);
     await ctrl.seek(clamped);
     _scheduleControlsHide();
   }
@@ -472,8 +522,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             padding: EdgeInsets.only(
               top: MediaQuery.of(context).padding.top + 4,
               bottom: 12,
-              left: 16,
-              right: 16,
+              left: 20,
+              right: 20,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -535,20 +585,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                     ],
                   ),
                 ),
-                // Drei symmetrische rechte Buttons — immer gleicher
-                // Slot, auch wenn aktuell nicht verfügbar (disabled),
-                // damit das Layout nicht springt wenn z.B. nach Media-
-                // Swap die Track-Liste sich ändert.
-                _buildEdgeIcon(
-                  icon: _pipActive
-                      ? Icons.picture_in_picture_alt_rounded
-                      : Icons.picture_in_picture_rounded,
-                  tooltip:
-                      _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
-                  enabled: _pipAvailable,
-                  onPressed: _pipAvailable ? _togglePiP : null,
-                ),
-                const SizedBox(width: 8),
+                // Drei symmetrische rechte Buttons. Reihenfolge links→
+                // rechts: Untertitel, Audio, PiP — PiP sitzt damit am
+                // Rand (analog zum sekundären "special" Control in
+                // Windows). Immer sichtbar, nur disabled wenn gerade
+                // nicht verfügbar — so springt das Layout nicht.
                 _buildEdgeIcon(
                   icon: Icons.subtitles_rounded,
                   tooltip: 'Untertitel',
@@ -565,6 +606,16 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                   onPressed: _audioTracks.length > 1
                       ? () => _openAudioMenu(context)
                       : null,
+                ),
+                const SizedBox(width: 8),
+                _buildEdgeIcon(
+                  icon: _pipActive
+                      ? Icons.picture_in_picture_alt_rounded
+                      : Icons.picture_in_picture_rounded,
+                  tooltip:
+                      _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
+                  enabled: _pipAvailable,
+                  onPressed: _pipAvailable ? _togglePiP : null,
                 ),
               ],
             ),
@@ -634,10 +685,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           bottom: 0,
           child: Container(
             padding: const EdgeInsets.only(
-              left: 16,
-              right: 16,
+              left: 20,
+              right: 20,
               top: 24,
-              bottom: 4,
+              bottom: 8,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -672,6 +723,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                     ),
                     child: Slider(
                       value: _sliderValue(),
+                      onChangeStart: (_) {
+                        // Auto-Hide aushebeln während des Scrubbens,
+                        // sonst blendet die Bar nach 3s mitten im Ziehen
+                        // aus — genau dann wenn man sie am dringendsten
+                        // braucht.
+                        _controlsHideTimer?.cancel();
+                        setState(() => _isScrubbing = true);
+                      },
                       onChanged: (v) {
                         if (_duration.inMilliseconds <= 0) return;
                         setState(() {
@@ -687,7 +746,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                           milliseconds:
                               (v * _duration.inMilliseconds).round(),
                         );
+                        _pendingSeekTarget = target;
+                        _pendingSeekAt = DateTime.now();
                         _controller?.seek(target);
+                        setState(() => _isScrubbing = false);
                         _scheduleControlsHide();
                       },
                       activeColor: AppTheme.accent,
@@ -904,18 +966,19 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     final nextEp = _lookupNextEpisode();
     if (nextEp == null) return const SizedBox.shrink();
     return Positioned(
-      right: 16,
-      // Knapp über der Bottom-Bar (Slider + Timestamps). Die Bottom-Bar
-      // ist ~48px hoch zzgl. 24px oben + 4px unten — 80px Offset lässt
-      // genug Luft ohne den Scrubber zu verdecken.
-      bottom: 80,
+      right: 20,
+      // Näher an der Bottom-Bar — der Button soll etwas weiter unten
+      // sitzen als vorher (User-Feedback), aber immer noch komplett
+      // über dem Scrubber bleiben.
+      bottom: 68,
       child: AnimatedOpacity(
         opacity: (_showNextEpisode && !_watchingCredits) ? 1.0 : 0.0,
         duration: const Duration(milliseconds: 250),
         child: IgnorePointer(
           ignoring: !_showNextEpisode || _watchingCredits,
           child: SizedBox(
-            width: 220,
+            width: 240,
+            height: 48,
             child: _buildCountdownButton(),
           ),
         ),
@@ -934,33 +997,36 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     final progress = _countdownProgress;
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
-      child: SizedBox(
-        height: 40,
-        child: TweenAnimationBuilder<double>(
-          tween: Tween<double>(begin: progress, end: progress),
-          duration: const Duration(milliseconds: 280),
-          curve: Curves.linear,
-          builder: (ctx, value, _) {
-            return Stack(
-              children: [
-                Positioned.fill(
-                  child: Row(
-                    children: [
-                      if (value > 0)
-                        Expanded(
-                          flex: (value * 1000).round().clamp(0, 1000),
-                          child: Container(
-                            color: const Color(0xFFBDBDBD),
-                          ),
-                        ),
-                      Expanded(
-                        flex: ((1.0 - value) * 1000).round().clamp(0, 1000),
-                        child: Container(color: Colors.white),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: progress, end: progress),
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.linear,
+        builder: (ctx, value, _) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              Row(
+                children: [
+                  if (value > 0)
+                    Expanded(
+                      flex: (value * 1000).round().clamp(0, 1000),
+                      child: Container(
+                        color: const Color(0xFFBDBDBD),
                       ),
-                    ],
+                    ),
+                  Expanded(
+                    flex: ((1.0 - value) * 1000).round().clamp(0, 1000),
+                    child: Container(color: Colors.white),
                   ),
-                ),
-                Material(
+                ],
+              ),
+              // Material + InkWell bekommen Positioned.fill und ihr
+              // Child ist Center, damit Icon+Text garantiert vertikal
+              // mittig im 48px hohen Button sitzen. Davor lief das
+              // über die Row's Intrinsic-Höhe und saß optisch am oberen
+              // Rand.
+              Positioned.fill(
+                child: Material(
                   color: Colors.transparent,
                   child: InkWell(
                     onTap: () {
@@ -968,28 +1034,32 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                       _saveProgress(treatAsCompleted: true);
                       _playNextEpisode();
                     },
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.play_arrow_rounded,
-                            size: 20, color: Colors.black),
-                        SizedBox(width: 6),
-                        Text(
-                          'Nächste Folge',
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
+                    child: const Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Icon(Icons.play_arrow_rounded,
+                              size: 22, color: Colors.black),
+                          SizedBox(width: 6),
+                          Text(
+                            'Nächste Folge',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ],
-            );
-          },
-        ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

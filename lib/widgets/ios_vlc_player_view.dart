@@ -173,10 +173,20 @@ class IOSVLCPlayerController {
     return raw.whereType<Map>().map((m) {
       return VlcTrack(
         id: (m['id'] as num?)?.toInt() ?? -1,
-        name: (m['name'] as String?) ?? 'Unbekannt',
+        name: _cleanTrackName((m['name'] as String?) ?? 'Unbekannt'),
         isCurrent: (m['isCurrent'] as bool?) ?? false,
       );
     }).toList();
+  }
+
+  /// VLCKit hängt gern einen Sprach-Code in eckigen Klammern hinter den
+  /// Track-Namen: "English [English]" oder "Deutsch [ger]". Das ist für
+  /// die UI redundant — ab dem " [" abschneiden, damit im Menü nur der
+  /// reine Name steht.
+  static String _cleanTrackName(String raw) {
+    final idx = raw.indexOf(' [');
+    if (idx <= 0) return raw.trim();
+    return raw.substring(0, idx).trim();
   }
 
   Future<bool> queryPiPPossible() async {
