@@ -623,7 +623,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 const SizedBox(width: 8),
                 _buildEdgeIcon(
                   icon: Icons.chat_rounded,
-                  tooltip: 'Audio-Spur',
+                  tooltip: 'Audiospur',
                   enabled: _audioTracks.length > 1,
                   onPressed: _audioTracks.length > 1
                       ? () => _openAudioMenu(context)
@@ -748,7 +748,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _scheduleControlsHide();
     await _showTrackMenu(
       context: context,
-      title: 'Audio-Spur',
+      title: 'Audiospur',
       tracks: _audioTracks,
       onSelect: (id) async => _setAudioTrack(id),
     );
@@ -780,8 +780,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       isScrollControlled: true,
       transitionAnimationController: AnimationController(
         vsync: Navigator.of(context),
-        duration: const Duration(milliseconds: 220),
-        reverseDuration: const Duration(milliseconds: 150),
+        // User-Feedback v1.5.30: "zack und zack" — ganz schnell rein
+        // und raus, kein sichtbarer Fade mehr. 110/70ms ist nah am
+        // nativen iOS-Sheet-Gefühl aber noch flüssig (unter ~60ms
+        // spürt es sich abgeschnitten an).
+        duration: const Duration(milliseconds: 110),
+        reverseDuration: const Duration(milliseconds: 70),
       ),
       builder: (ctx) {
         return _TrackMenuSheet(
@@ -984,17 +988,22 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                       ),
                     ),
                     // TweenAnimationBuilder smootht die diskreten
-                    // Position-Events (alle ~33ms aus VLC) auf die
-                    // volle Display-Refresh-Rate. Der Slider-Thumb
-                    // wandert damit kontinuierlich statt in Sprüngen.
-                    // Während des Scrub-Drags umgehen wir den Tween
-                    // (Duration.zero), damit der Thumb dem Finger
-                    // ohne Lag folgt.
+                    // Position-Events (VLC emittiert jetzt bei 60Hz =
+                    // ~16ms Takt) auf die volle Display-Refresh-Rate.
+                    // v1.5.30 war der Tween noch 45ms — das ist DEUTLICH
+                    // länger als das Emit-Intervall und produziert ein
+                    // leichtes "hinterher-swimmen" des Thumbs. Bei
+                    // 60Hz-Emit setzen wir den Tween auf 20ms (~=1
+                    // Frame-Budget @120Hz ProMotion, 1.2 Frames @60Hz):
+                    // genug um zwischen zwei Samples linear zu inter-
+                    // polieren, kurz genug damit kein sichtbarer Lag
+                    // mehr entsteht. Während Scrub-Drag umgehen wir
+                    // den Tween komplett (Duration.zero).
                     child: TweenAnimationBuilder<double>(
                       tween: Tween<double>(begin: value, end: value),
                       duration: _isScrubbing
                           ? Duration.zero
-                          : const Duration(milliseconds: 45),
+                          : const Duration(milliseconds: 20),
                       curve: Curves.linear,
                       builder: (ctx, tweenValue, _) {
                         return Slider(
@@ -1195,7 +1204,12 @@ class _TrackMenuSheetState extends State<_TrackMenuSheet> {
       widget.onSelect(id);
     }
     _autoCloseTimer?.cancel();
-    _autoCloseTimer = Timer(const Duration(milliseconds: 900), () {
+    // User-Feedback v1.5.30: "nur Bruchteil einer Sekunde sehen dass
+    // meine Änderung genommen wurde" — also so knapp wie möglich, aber
+    // lang genug damit das Color-Swap wahrnehmbar bleibt (die
+    // AnimatedDefaultTextStyle darunter läuft ~160ms). 220ms trifft
+    // den Sweetspot.
+    _autoCloseTimer = Timer(const Duration(milliseconds: 220), () {
       if (!mounted) return;
       Navigator.of(context).pop();
     });

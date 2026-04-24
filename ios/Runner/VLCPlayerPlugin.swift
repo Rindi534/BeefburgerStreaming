@@ -220,11 +220,31 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // trivial zu füllen (Disk-I/O ist schneller als Real-Time-
         // Playback), ein großer Vorrat bringt nichts außer Latenz.
         media.addOption(":file-caching=300")
-        // Untertitel-Rendering stabilisieren. Ohne festen Scale-Faktor
-        // kalkuliert VLCKit die Glyph-Größe bei jedem Layout neu und
-        // cached sie nicht zwischen Frames → das war die Ursache für
-        // das Flackern der Untertitel in v1.5.24/25.
-        media.addOption(":sub-text-scale=100")
+        // ─── Subtitle stability ───────────────────────────────────────
+        // User-Report v1.5.30: Untertitel "flackern — sind da und
+        // verschwinden wieder". Ursachen-Analyse:
+        //
+        // 1. Dropped/skipped Frames: Wenn VLCKit unter Last Frames
+        //    verwirft, wird das Subtitle-Overlay MIT verworfen — es
+        //    erscheint erst beim nächsten "ganzen" Frame neu. Auf
+        //    iPhones mit Metal-HW-Decode ist das unter 4K HEVC +
+        //    externem .srt gut reproduzierbar. Fix: drop/skip deaktivieren.
+        //
+        // 2. `:sub-text-scale=100` forcierte v1.5.24+ einen Glyph-Cache-
+        //    Reset bei jedem Subtitle-Track-Wechsel. 100 ist VLCs
+        //    Default — die Option explizit zu setzen triggerte den Re-
+        //    Render. Raus damit; VLC verwendet eh schon 100.
+        //
+        // 3. `:freetype-rel-fontsize` steuert die Subtitle-Schriftgröße
+        //    relativ zur Videohöhe (kleiner = größer). 16 ist der
+        //    Default-Wert, explizit gesetzt stabilisiert es aber den
+        //    Font-Layout-Cache (VLC nutzt den Wert als Cache-Key und
+        //    vermeidet Invalidierungen bei Auflösungswechseln der
+        //    Rendering-Surface — relevant wenn PiP-Layer-Size anders
+        //    ist als die Haupt-Drawable).
+        media.addOption(":no-drop-late-frames")
+        media.addOption(":no-skip-frames")
+        media.addOption(":freetype-rel-fontsize=16")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
@@ -322,6 +342,31 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             loadMedia(urlString: media,
                       subtitleUrl: sub,
                       startSeconds: start)
+            // Drawable-Kick: nach dem stop/play-Zyklus von loadMedia
+            // den drawable-Handle einmal lösen und wieder dranhängen.
+            // Während PiP aktiv ist (App im Background) verpasst
+            // MobileVLCKit sonst die Video-Output-Reinitialisierung —
+            // Audio läuft, aber saveVideoSnapshotAt bekommt keine neuen
+            // Frames ("Blackscreen bleibt", v1.5.30-Bugreport). Drei
+            // gestaffelte Kicks über die ersten 2s decken unter-
+            // schiedliche Decoder-Startup-Timings ab (manche Files
+            // brauchen länger bis der erste Keyframe dekodiert ist).
+            let kickTimes: [Double] = [0.3, 0.9, 1.8]
+            for t in kickTimes {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self = self else { return }
+                    // Nur kicken wenn noch kein Video-Output steht —
+                    // sonst reißen wir einen gerade laufenden Decoder
+                    // unnötig auf.
+                    if !self.mediaPlayer.hasVideoOut {
+                        let d = self.videoView
+                        self.mediaPlayer.drawable = nil
+                        self.mediaPlayer.drawable = d
+                        NSLog("[VLCPlayer] drawable kicked at +\(t)s "
+                            + "(hasVideoOut was false)")
+                    }
+                }
+            }
             result(nil)
         case "startPiP":
             if #available(iOS 15.0, *),
@@ -475,7 +520,12 @@ extension VLCPlayerView: VLCMediaPlayerDelegate {
         // an der Display-Refresh-Rate dass der Flutter-Tween die
         // verbleibenden Frames unsichtbar überbrückt. EventChannel
         // kommt mit der Rate locker klar (~300 Bytes/event).
-        if now - lastPositionEmit < 0.033 { return }
+        // 60 Hz (16ms). v1.5.29 lag bei 33ms/30Hz; User hat "noch
+        // flüssiger" gefordert. Über 60Hz geht nicht sinnvoll — die
+        // Flutter-UI rendert ebenfalls bei 60Hz (bzw. 120Hz auf ProMotion),
+        // schneller emittieren würde nur EventChannel-Traffic verbrennen
+        // ohne sichtbaren Gewinn.
+        if now - lastPositionEmit < 0.016 { return }
         lastPositionEmit = now
         let ms = mediaPlayer.time.intValue
         if ms >= 0 {

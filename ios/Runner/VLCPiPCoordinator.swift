@@ -250,7 +250,14 @@ class VLCPiPCoordinator: NSObject {
     /// hasVideoOut-Gate in captureOneFrame umgangen wird, damit wir die
     /// ersten Frames der neuen Folge einfangen sobald der Decoder läuft.
     func mediaWillChange() {
-        mediaSwapDeadline = Date().timeIntervalSince1970 + 3.0
+        // 15s-Fenster. v1.5.30 lag bei 3s, reichte aber nicht: in
+        // Background-PiP braucht libvlc spürbar länger bis der neue
+        // Video-Decoder Frames produziert die saveVideoSnapshotAt
+        // tatsächlich abgreifen kann (teilweise bleibt hasVideoOut
+        // dauerhaft false solange die App nicht wieder aktiv ist).
+        // 15s deckt den realistischen Auto-Next-Flow (Countdown + ein
+        // paar Sekunden Pufferzeit) komfortabel ab.
+        mediaSwapDeadline = Date().timeIntervalSince1970 + 15.0
         // Stale Frame entfernen. flushAndRemoveImage() reißt NICHT die
         // PiP-Session ab — iOS zeigt nur kurz einen schwarzen Viewport,
         // bis der erste neue Frame reinkommt. Deutlich angenehmer als
@@ -258,7 +265,7 @@ class VLCPiPCoordinator: NSObject {
         if displayLayer.status != .failed {
             displayLayer.flushAndRemoveImage()
         }
-        NSLog("[VLCPiP] mediaWillChange: swap-window=3s, layer flushed")
+        NSLog("[VLCPiP] mediaWillChange: swap-window=15s, layer flushed")
     }
 
     func detach() {
