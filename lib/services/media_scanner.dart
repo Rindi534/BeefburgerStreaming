@@ -47,6 +47,13 @@ class MediaScanner {
     final entities = await rootDir.list(followLinks: false).toList();
 
     for (final entity in entities) {
+      // Skip OS-generated hidden entries like `.Trashes` / `.Trash-1000`
+      // (iOS/macOS), `.DS_Store`, `.fseventsd` etc. Those showed up at
+      // the top of the library as phantom "movies" because the scanner
+      // treated them as regular folders. Anything dot-prefixed is by
+      // convention not user media.
+      if (_isHidden(entity.path)) continue;
+
       // Per-entry try/catch so a single problem folder (e.g. a path longer
       // than MAX_PATH on an older Windows without long-path support, or a
       // permissions hiccup) doesn't abort the entire library scan.
@@ -70,8 +77,12 @@ class MediaScanner {
     final dirName = p.basename(dir.path);
     final entities = await dir.list(followLinks: false).toList();
 
-    final subDirs = entities.whereType<Directory>().toList();
-    final files = entities.whereType<File>().toList();
+    // Auch innerhalb eines Ordners versteckte Einträge ignorieren —
+    // sonst landet eine `.Trashes/SeriesX` im Season-Scan und produziert
+    // Geister-Episoden.
+    final visible = entities.where((e) => !_isHidden(e.path));
+    final subDirs = visible.whereType<Directory>().toList();
+    final files = visible.whereType<File>().toList();
     final videoFiles = files.where((f) => _isVideoFile(f.path)).toList();
 
     final coverPath = _findCoverImage(dir.path, files);
@@ -234,6 +245,15 @@ class MediaScanner {
   bool _isVideoFile(String filePath) {
     final ext = p.extension(filePath).toLowerCase();
     return _videoExtensions.contains(ext);
+  }
+
+  /// Dot-prefixed Namen gelten per Konvention als versteckte
+  /// Datei/Ordner — iOS legt z.B. `.Trashes`, macOS `.DS_Store` und
+  /// `.fseventsd` an; solche Einträge sollen im Library-Scan nicht als
+  /// Medien auftauchen.
+  bool _isHidden(String path) {
+    final name = p.basename(path);
+    return name.startsWith('.');
   }
 
   bool _isSeasonFolder(String dirPath) {

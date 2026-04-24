@@ -207,12 +207,11 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // 2500ms = guter Kompromiss zwischen RAM-Verbrauch und
         // flüssigem Resume. v1.5.24 hochgezogen von 1500ms.
         media.addOption(":file-caching=2500")
-        // Clock-Jitter-Fenster: bei 0 verzichtet VLC auf aggressive
-        // Korrektur-Jumps bei minimalen Audio-Video-Driften, was sich
-        // nach Pause als hörbares Stottern äußert. Setzt den Audio-
-        // Refill-Pfad auf sanftes Resync statt auf Re-Sync-Jump.
-        media.addOption(":clock-jitter=0")
-        media.addOption(":clock-synchro=0")
+        // v1.5.24 hatte :clock-jitter=0 / :clock-synchro=0 dazu
+        // genommen — damit wurden Untertitel unspielbar (starkes
+        // Flackern/Blinken, siehe Bug-Report). Rausgenommen; den
+        // Audio-Lag nach Pause/Play lösen wir stattdessen über ein
+        // explizites Re-Seek in handleMethodCall "play" (weiter unten).
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
@@ -247,7 +246,24 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                                   result: @escaping FlutterResult) {
         switch call.method {
         case "play":
+            // VLCKit-Audio-Lag-Workaround: MobileVLCKit braucht nach
+            // einem pause() → play() auf iOS ~400–600 ms bis die
+            // AudioUnit wieder Samples rausschiebt (bekannter Bug, das
+            // Video läuft aber man hört erst mal nichts). Ein minimales
+            // Re-Seek auf die aktuelle Zeit forciert VLC dazu den
+            // Audio-Output neu zu primen — mit file-caching=2500
+            // reinflusht das die Samples ohne sichtbaren Sprung.
+            let wasPaused = mediaPlayer.state == .paused
             mediaPlayer.play()
+            if wasPaused {
+                let t = mediaPlayer.time
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    guard let self = self else { return }
+                    if self.mediaPlayer.state == .playing {
+                        self.mediaPlayer.time = t
+                    }
+                }
+            }
             result(nil)
         case "pause":
             mediaPlayer.pause()

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:media_kit/media_kit.dart';
@@ -92,6 +93,19 @@ Future<void> _migrateHiveFromDocumentsIfNeeded(String dest) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+
+  // iOS: App global auf Portrait locken. Home, Detail-Screen und
+  // Einstellungen sind nie für Landscape designed — ohne diesen Lock
+  // kippt das Layout um sobald ein iPhone mal zur Seite gedreht wird.
+  // Der Video-Player (IOSVLCPlayerScreen / IOSPlayerScreen) überschreibt
+  // das in seinem initState temporär zu Landscape und stellt beim
+  // Schließen die Portrait-Lock wieder her.
+  if (Platform.isIOS) {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+  }
 
   // Initialize window manager for desktop platforms
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
