@@ -729,63 +729,66 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     );
   }
 
-  /// Öffnet das Untertitel-Menü als unten-eingeblendete ModalBottom-
-  /// Sheet-Variante mit eigenem dunklem Styling. Einheitlich für
-  /// Touch-Geräte (auf iOS/iPad sind PopupMenus über IconButtons
-  /// ergonomisch nicht toll — zu kleiner Anchor-Bereich, zu viel
-  /// Movement vom Finger zum Menü).
+  /// Öffnet das Untertitel-Menü. Der Track-Wechsel wird sofort beim
+  /// Tap angewendet (nicht erst nach Close), damit die UI die Auswahl
+  /// sichtbar umfärben kann. Das Sheet schließt sich danach selbst
+  /// nach 900ms, außer der User tippt währenddessen einen anderen
+  /// Eintrag — dann reset und wieder 900ms.
   Future<void> _openSubtitleMenu(BuildContext context) async {
     _scheduleControlsHide();
-    final chosen = await _showTrackMenu(
+    await _showTrackMenu(
       context: context,
       title: 'Untertitel',
       tracks: _subtitleTracks,
+      onSelect: (id) async => _setSubtitleTrack(id),
     );
-    if (chosen != null) {
-      await _setSubtitleTrack(chosen);
-    }
   }
 
   Future<void> _openAudioMenu(BuildContext context) async {
     _scheduleControlsHide();
-    final chosen = await _showTrackMenu(
+    await _showTrackMenu(
       context: context,
       title: 'Audio-Spur',
       tracks: _audioTracks,
+      onSelect: (id) async => _setAudioTrack(id),
     );
-    if (chosen != null) {
-      await _setAudioTrack(chosen);
-    }
   }
 
-  /// Gemeinsames Styling für beide Track-Menüs: dunkler Hintergrund,
-  /// weiße Schrift, ausgewählter Eintrag rot (kein Radio-Button).
+  /// Gemeinsames Track-Menü. Dunkler Hintergrund, weiße Schrift,
+  /// aktueller Eintrag rot mit Häkchen.
   ///
-  /// UX-Details die in 1.5.28 dazu kamen:
-  ///   * Liste ist scrollbar (wichtig wenn MKV >6-7 Spuren hat, vorher
-  ///     rauschte sie unten aus dem Screen raus)
-  ///   * Nach Tap auf einen Eintrag wird erst die rote Highlight-
-  ///     Animation gespielt (180ms) und dann geschlossen — vorher
-  ///     "schluckte" der sofortige Close den visuellen Feedback-Frame
-  ///   * 320ms Open-/Close-Transition mit ease-out statt Flutter-
-  ///     Default 250ms linear
-  Future<int?> _showTrackMenu({
+  /// Verhalten (reworked in 1.5.29):
+  ///   * Open: Flutter-Default-Transition (~250ms ease-out)
+  ///   * Close bei Tap aufs Barrier (außerhalb) → reverse-Dauer 150ms
+  ///     (1.5.28 hatte 260ms = spürbar träge)
+  ///   * Tap auf Eintrag: sofort via `onSelect` anwenden + lokal auf
+  ///     rot umfärben (alter Eintrag wird weiß). Sheet bleibt 900ms
+  ///     offen damit User die Änderung sieht — schließt sich dann
+  ///     selbst. Erneuter Tap innerhalb des Fensters resettet das.
+  ///   * Tap aufs Barrier NACH einer Auswahl schließt sofort.
+  ///   * Scroll-Physics: BouncingScrollPhysics für iOS-natives Gefühl.
+  Future<void> _showTrackMenu({
     required BuildContext context,
     required String title,
     required List<VlcTrack> tracks,
+    required Future<void> Function(int id) onSelect,
   }) {
-    return showModalBottomSheet<int>(
+    return showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.45),
       isScrollControlled: true,
       transitionAnimationController: AnimationController(
         vsync: Navigator.of(context),
-        duration: const Duration(milliseconds: 320),
-        reverseDuration: const Duration(milliseconds: 260),
+        duration: const Duration(milliseconds: 220),
+        reverseDuration: const Duration(milliseconds: 150),
       ),
       builder: (ctx) {
-        return _TrackMenuSheet(title: title, tracks: tracks);
+        return _TrackMenuSheet(
+          title: title,
+          tracks: tracks,
+          onSelect: onSelect,
+        );
       },
     );
   }
@@ -835,21 +838,17 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     );
   }
 
-  /// Minimales "Nächste Folge"-Overlay fürs Handy: nur ein einziger
-  /// Button mit Fortschrittsfüllung. Der User tippt entweder den Button
-  /// (→ sofort weiter) oder irgendwo anders auf den Screen (→ wird als
-  /// "Abspann ansehen" gewertet und der Auto-Skip unterdrückt).
-  /// Der Tap-außerhalb wird von `_handleOutsideNextEpisodeTap` in der
-  /// Haupt-Stack unten abgefangen — dieser Widget rendert nur den Button
-  /// selbst, ohne eigenen Tap-Blocker rundherum.
+  /// Minimales "Nächste Folge"-Overlay. ValueListenableBuilder hängt
+  /// am _positionNotifier, damit der Countdown-Balken bei jedem VLC-
+  /// Position-Event (30Hz) neu berechnet wird — vorher las
+  /// `_countdownProgress` nur `_position`, und seit wir Position via
+  /// Notifier statt setState propagieren, wurde der Overlay nicht mehr
+  /// rebuildet. Symptom: Button erschien aber der Balken blieb bei 0.
   Widget _buildNextEpisodeOverlay(BuildContext context) {
     final nextEp = _lookupNextEpisode();
     if (nextEp == null) return const SizedBox.shrink();
     return Positioned(
       right: 20,
-      // Näher an der Bottom-Bar — der Button soll etwas weiter unten
-      // sitzen als vorher (User-Feedback), aber immer noch komplett
-      // über dem Scrubber bleiben.
       bottom: 68,
       child: AnimatedOpacity(
         opacity: (_showNextEpisode && !_watchingCredits) ? 1.0 : 0.0,
@@ -859,7 +858,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           child: SizedBox(
             width: 240,
             height: 48,
-            child: _buildCountdownButton(),
+            child: ValueListenableBuilder<Duration>(
+              valueListenable: _positionNotifier,
+              builder: (ctx, _, __) => _buildCountdownButton(),
+            ),
           ),
         ),
       ),
@@ -981,40 +983,53 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                         overlayRadius: 18,
                       ),
                     ),
-                    child: Slider(
-                      value: value,
-                      onChangeStart: (_) {
-                        _controlsHideTimer?.cancel();
-                        _isScrubbing = true;
-                      },
-                      onChanged: (v) {
-                        if (duration.inMilliseconds <= 0) return;
-                        // Nur den Notifier updaten → nur dieser Subtree
-                        // rebuildet (Slider + Zeit-Text). Früher rief
-                        // der Handler setState auf dem ganzen Screen
-                        // auf, was die Top-Bar inkl. Gradients jedesmal
-                        // rebuildete → spürbares Ruckeln.
-                        _positionNotifier.value = Duration(
-                          milliseconds:
-                              (v * duration.inMilliseconds).round(),
+                    // TweenAnimationBuilder smootht die diskreten
+                    // Position-Events (alle ~33ms aus VLC) auf die
+                    // volle Display-Refresh-Rate. Der Slider-Thumb
+                    // wandert damit kontinuierlich statt in Sprüngen.
+                    // Während des Scrub-Drags umgehen wir den Tween
+                    // (Duration.zero), damit der Thumb dem Finger
+                    // ohne Lag folgt.
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween<double>(begin: value, end: value),
+                      duration: _isScrubbing
+                          ? Duration.zero
+                          : const Duration(milliseconds: 45),
+                      curve: Curves.linear,
+                      builder: (ctx, tweenValue, _) {
+                        return Slider(
+                          value: tweenValue.clamp(0.0, 1.0),
+                          onChangeStart: (_) {
+                            _controlsHideTimer?.cancel();
+                            _isScrubbing = true;
+                          },
+                          onChanged: (v) {
+                            if (duration.inMilliseconds <= 0) return;
+                            // Nur den Notifier updaten → nur dieser
+                            // Subtree rebuildet (Slider + Zeit-Text).
+                            _positionNotifier.value = Duration(
+                              milliseconds:
+                                  (v * duration.inMilliseconds).round(),
+                            );
+                          },
+                          onChangeEnd: (v) {
+                            if (duration.inMilliseconds <= 0) return;
+                            final target = Duration(
+                              milliseconds:
+                                  (v * duration.inMilliseconds).round(),
+                            );
+                            _pendingSeekTarget = target;
+                            _pendingSeekAt = DateTime.now();
+                            _position = target;
+                            _positionNotifier.value = target;
+                            _controller?.seek(target);
+                            _isScrubbing = false;
+                            _scheduleControlsHide();
+                          },
+                          activeColor: AppTheme.accent,
+                          inactiveColor: Colors.white24,
                         );
                       },
-                      onChangeEnd: (v) {
-                        if (duration.inMilliseconds <= 0) return;
-                        final target = Duration(
-                          milliseconds:
-                              (v * duration.inMilliseconds).round(),
-                        );
-                        _pendingSeekTarget = target;
-                        _pendingSeekAt = DateTime.now();
-                        _position = target;
-                        _positionNotifier.value = target;
-                        _controller?.seek(target);
-                        _isScrubbing = false;
-                        _scheduleControlsHide();
-                      },
-                      activeColor: AppTheme.accent,
-                      inactiveColor: Colors.white24,
                     ),
                   ),
                 ),
@@ -1121,39 +1136,75 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   }
 }
 
-/// Track-Menü als eigenes StatefulWidget damit wir lokalen State halten
-/// können: `_pendingId` markiert den gerade angetippten Eintrag rot,
-/// bevor das Sheet nach 180ms weggeschlossen wird. Das liefert den
-/// visuellen "ja ich hab's erwischt"-Frame den der User in 1.5.27
-/// vermisst hat.
+/// Track-Menü mit lokalem "aktueller Eintrag"-State, damit Auswahl
+/// sofort umgefärbt wird und das Sheet eine kurze Zeit offen bleibt.
+///
+/// UX (v1.5.29):
+///   * `_selectedId` spiegelt die aktuell sichtbare Auswahl. Initial aus
+///     `tracks.isCurrent`, danach vom User gesetzt.
+///   * Tap auf Eintrag → `onSelect(id)` sofort (VLC-Track wechseln),
+///     setState(_selectedId = id), 900ms-Timer starten, der danach pop't.
+///   * Tap auf ANDEREN Eintrag innerhalb des 900ms-Fensters → alter
+///     Timer gecancelt, neuer Track gewechselt, 900ms neu gestartet.
+///   * Tap aufs Barrier → showModalBottomSheet reverse-pop (~150ms).
 class _TrackMenuSheet extends StatefulWidget {
   final String title;
   final List<VlcTrack> tracks;
+  final Future<void> Function(int id) onSelect;
 
-  const _TrackMenuSheet({required this.title, required this.tracks});
+  const _TrackMenuSheet({
+    required this.title,
+    required this.tracks,
+    required this.onSelect,
+  });
 
   @override
   State<_TrackMenuSheet> createState() => _TrackMenuSheetState();
 }
 
 class _TrackMenuSheetState extends State<_TrackMenuSheet> {
-  int? _pendingId;
+  late int _selectedId;
+  Timer? _autoCloseTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = widget.tracks.firstWhere(
+      (t) => t.isCurrent,
+      orElse: () => widget.tracks.isNotEmpty
+          ? widget.tracks.first
+          : const VlcTrack(id: -1, name: '', isCurrent: false),
+    );
+    _selectedId = current.id;
+  }
+
+  @override
+  void dispose() {
+    _autoCloseTimer?.cancel();
+    super.dispose();
+  }
 
   void _handleTap(int id) {
-    if (_pendingId != null) return; // Doppel-Tap ignorieren
-    setState(() => _pendingId = id);
-    // Kurzer Moment damit die Highlight-Farbe sichtbar wird bevor wir
-    // das Sheet wegklappen — reine UI-Politess.
-    Future.delayed(const Duration(milliseconds: 180), () {
+    // Gleichen Eintrag nochmal getippt: Timer zurücksetzen (User will
+    // länger schauen) aber keine onSelect-Neuapplikation — VLC hat
+    // den Track schon.
+    if (id != _selectedId) {
+      setState(() => _selectedId = id);
+      // Sofort anwenden — kein await, der Menu-Close soll dadurch
+      // nicht blockiert werden.
+      widget.onSelect(id);
+    }
+    _autoCloseTimer?.cancel();
+    _autoCloseTimer = Timer(const Duration(milliseconds: 900), () {
       if (!mounted) return;
-      Navigator.of(context).pop(id);
+      Navigator.of(context).pop();
     });
   }
 
   @override
   Widget build(BuildContext context) {
     // Max-Höhe 55% des Screens — reicht für ~10 Tracks ohne den
-    // Player komplett zu verdecken, und wird scrollbar darüber hinaus.
+    // Player komplett zu verdecken, scrollbar darüber hinaus.
     final maxHeight = MediaQuery.of(context).size.height * 0.55;
     return SafeArea(
       top: false,
@@ -1189,13 +1240,18 @@ class _TrackMenuSheetState extends State<_TrackMenuSheet> {
               Flexible(
                 child: ListView.builder(
                   shrinkWrap: true,
+                  // BouncingScrollPhysics = nativer iOS-Scroll-Feel mit
+                  // Overscroll-Bounce. AlwaysScrollable als Parent, damit
+                  // auch bei <maxHeight-Content der Scroll responsive
+                  // bleibt (sonst "klebt" kurze Listen).
+                  physics: const BouncingScrollPhysics(
+                    parent: AlwaysScrollableScrollPhysics(),
+                  ),
                   padding: const EdgeInsets.only(bottom: 6),
                   itemCount: widget.tracks.length,
                   itemBuilder: (ctx, i) {
                     final t = widget.tracks[i];
-                    // Ist entweder schon aktiv (aus VLC) ODER grad per
-                    // Tap vorgemerkt — beides zeigt rot.
-                    final highlighted = t.isCurrent || _pendingId == t.id;
+                    final selected = t.id == _selectedId;
                     return InkWell(
                       onTap: () => _handleTap(t.id),
                       child: AnimatedContainer(
@@ -1205,31 +1261,33 @@ class _TrackMenuSheetState extends State<_TrackMenuSheet> {
                           horizontal: 16,
                           vertical: 12,
                         ),
-                        color: _pendingId == t.id
+                        color: selected
                             ? AppTheme.accent.withValues(alpha: 0.12)
                             : Colors.transparent,
                         child: Row(
                           children: [
                             Icon(
-                              highlighted ? Icons.check_rounded : null,
+                              selected ? Icons.check_rounded : null,
                               size: 20,
-                              color: highlighted
+                              color: selected
                                   ? AppTheme.accent
                                   : Colors.transparent,
                             ),
                             const SizedBox(width: 12),
                             Expanded(
-                              child: Text(
-                                t.name,
+                              child: AnimatedDefaultTextStyle(
+                                duration: const Duration(milliseconds: 140),
+                                curve: Curves.easeOut,
                                 style: TextStyle(
-                                  color: highlighted
+                                  color: selected
                                       ? AppTheme.accent
                                       : Colors.white,
                                   fontSize: 15,
-                                  fontWeight: highlighted
+                                  fontWeight: selected
                                       ? FontWeight.w600
                                       : FontWeight.w400,
                                 ),
+                                child: Text(t.name),
                               ),
                             ),
                           ],

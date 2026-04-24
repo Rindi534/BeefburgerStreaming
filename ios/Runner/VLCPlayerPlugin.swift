@@ -459,10 +459,12 @@ extension VLCPlayerView: VLCMediaPlayerDelegate {
 
     func mediaPlayerTimeChanged(_ aNotification: Notification) {
         let now = Date().timeIntervalSince1970
-        // 10 Hz (100ms) statt 5 Hz — Slider und Countdown-Animation
-        // wirken bei 5 Hz sichtbar gestuft. 10 Hz ist flüssig genug und
-        // belastet den EventChannel nicht.
-        if now - lastPositionEmit < 0.1 { return }
+        // 30 Hz (33ms) — 10 Hz sah am Slider noch stufig aus, trotz
+        // Tween-Interpolation auf Dart-Seite. 30 Hz ist dicht genug
+        // an der Display-Refresh-Rate dass der Flutter-Tween die
+        // verbleibenden Frames unsichtbar überbrückt. EventChannel
+        // kommt mit der Rate locker klar (~300 Bytes/event).
+        if now - lastPositionEmit < 0.033 { return }
         lastPositionEmit = now
         let ms = mediaPlayer.time.intValue
         if ms >= 0 {

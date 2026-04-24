@@ -269,8 +269,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 // (thumbnail → banner → cover → WatchProgress snapshot).
                 // Returns all-null for removed media so the card falls back
                 // to the cover snapshot stored in the WatchProgress record.
+                //
+                // Der iOS-VLC-Player mutiert bei Episoden-Wechsel die
+                // `mediaId` zu `<serienId>::<episodePath>` (damit Watch-
+                // Progress pro Episode gespeichert wird). Für den Image-
+                // Lookup interessiert uns aber nur die Serie → Präfix
+                // vor `::` abschneiden. Sonst matcht der `item.id`-
+                // Vergleich nicht und Thumbnail/Banner/Cover fallen auf
+                // den (oft veralteten) WatchProgress-Snapshot zurück —
+                // genau das war der Thumbnail-Hiccup nach Next-Episode.
+                final idx = id.indexOf('::');
+                final lookupId = idx > 0 ? id.substring(0, idx) : id;
                 for (final item in library.items) {
-                  if (item.id == id) {
+                  if (item.id == lookupId) {
                     return (
                       thumbnail: item.thumbnailImagePath,
                       banner: item.bannerImagePath,
