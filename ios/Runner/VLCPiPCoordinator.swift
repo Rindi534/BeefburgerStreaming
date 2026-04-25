@@ -171,6 +171,15 @@ class VLCPiPCoordinator: NSObject {
     /// dauerhaft "Live".
     private var lastKnownLengthMs: Int32 = 0
 
+    /// True während ein Skip-Operation läuft. iOS-PiP fragt während
+    /// dieser Zeit `pictureInPictureControllerIsPlaybackPaused`
+    /// mehrfach ab; VLCs `time =` Setter wirft den Player für ~500ms
+    /// in einen kurzen seeking-State wo player.isPlaying false sein
+    /// kann. Würden wir das durchreichen, zeigt iOS das Pause-Symbol
+    /// und der User muss manuell Play tappen. Mit diesem Flag halten
+    /// wir die Antwort STABIL auf "playing" während der Seek-Phase.
+    private var skipInProgress: Bool = false
+
     /// Aktualisiert displayLayer.controlTimebase auf den aktuellen
     /// Stand des VLCMediaPlayers. Rate=1 wenn playing, 0 wenn paused.
     /// Time = aktuelle Wiedergabe-Position. iOS-PiP nutzt das für
@@ -178,7 +187,10 @@ class VLCPiPCoordinator: NSObject {
     private func syncTimebase() {
         guard let tb = displayLayer.controlTimebase,
               let player = mediaPlayer else { return }
-        let isPlaying = player.isPlaying
+        // Während skipInProgress vorgaukeln dass wir spielen — siehe
+        // Doku auf der Variable. VLC's transienter "seeking"-State
+        // darf nicht durch zu iOS-PiP geleakt werden.
+        let isPlaying = skipInProgress || player.isPlaying
         let posMs = player.time.intValue
         let posSec = max(0, Double(posMs) / 1000.0)
         let target = CMTime(seconds: posSec, preferredTimescale: 1000)
@@ -353,6 +365,12 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
     func pictureInPictureControllerIsPlaybackPaused(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
+        // Während eines Skip-Vorgangs antworten wir STABIL "playing"
+        // — egal was VLC intern gerade als isPlaying meldet — sonst
+        // wechselt das System-PiP-UI während des Seeks auf das Pause-
+        // Icon und vergisst nach dem Seek nicht mehr selbst auf Play
+        // zurück zu schalten.
+        if skipInProgress { return false }
         return !(mediaPlayer?.isPlaying ?? false)
     }
 
@@ -380,20 +398,25 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         let deltaMs = Int32(CMTimeGetSeconds(skipInterval) * 1000)
         let target = currentMs + deltaMs
         let safe = max(0, target)
+
+        // Skip-In-Progress-Flag setzen damit
+        // pictureInPictureControllerIsPlaybackPaused stabil "playing"
+        // antwortet und das System-PiP-UI nicht auf Pause-Symbol
+        // umschaltet während VLC seekt.
+        if wasPlaying {
+            skipInProgress = true
+        }
+
         player.time = VLCTime(int: safe)
 
-        // VLC pausiert beim Seek intern und braucht ein paar 100ms
-        // bis der Decoder neu gepuffert hat. Ein synchroner play()
-        // direkt nach dem Setter wird oft IGNORIERT weil VLC noch
-        // im "seeking"-State steckt. Lösung: den play()-Call mit
-        // mehreren gestaffelten Versuchen über die nächsten ~600ms
-        // verteilt rausschicken — sobald VLC wieder bereit ist,
-        // greift der erste der Calls und der Rest ist No-op.
-        // Zusätzlich Timebase explizit auf rate=1 ziehen, damit das
-        // System-PiP-UI nicht denkt der Player wäre pausiert.
         if wasPlaying {
+            // Mehrere gestaffelte play()-Versuche — VLC's "time ="
+            // wirft den Player kurz in einen seeking-State; ein
+            // synchroner play() direkt danach wird oft ignoriert.
+            // Die Cascade trifft sicher den Punkt ab dem play()
+            // wieder greift. Zusätzlich Timebase auf rate=1 halten.
             player.play()
-            for delayMs in [100, 250, 500] {
+            for delayMs in [100, 250, 500, 800] {
                 DispatchQueue.main.asyncAfter(
                     deadline: .now() + .milliseconds(delayMs)
                 ) { [weak self] in
@@ -406,6 +429,14 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
                         CMTimebaseSetRate(tb, rate: 1.0)
                     }
                 }
+            }
+            // Flag nach 1.2s zurücksetzen — bis dahin sollte VLC
+            // garantiert wieder im playing-State sein.
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + 1.2
+            ) { [weak self] in
+                self?.skipInProgress = false
+                self?.pipController?.invalidatePlaybackState()
             }
         }
         completionHandler()

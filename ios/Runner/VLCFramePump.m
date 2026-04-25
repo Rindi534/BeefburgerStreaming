@@ -161,11 +161,13 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
 - (void)dealloc
 {
-    // Sicherheitsnetz. Wenn der Caller vergisst detach() aufzurufen,
-    // wäre das ein use-after-free wartend zu passieren: libvlc
-    // ruft `lock_cb(opaque=self)` aus seinem Decoder-Thread auf,
-    // self ist aber schon dealloziert → crash. Deshalb hier noch
-    // einmal forcieren bevor wir die ivars freigeben.
+    // Sicherheitsnetz für Pfade die detach() nicht explizit gerufen
+    // haben (zb wenn Flutter den PlatformView abreißt). Auch hier:
+    // KEIN sofortiges Release des Pools — libvlc-Worker-Threads
+    // könnten weiterhin in unsere Buffer schreiben (Crash-Report
+    // v1.6.4 zeigte picture_CopyPixels läuft selbst nach
+    // mediaPlayer.stop() weiter). Deferred-Release nach 2s, damit
+    // jegliche libvlc-Aktivität garantiert durch ist.
     if (_attached) {
         NSLog(@"[VLCFramePump] WARN: dealloc ohne vorheriges detach — forciere");
         if (_handle) {
@@ -175,20 +177,18 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         _attached = NO;
         _handle = NULL;
     }
-    // Erst HIER (im dealloc) den Pool und gehaltene Buffer freigeben.
-    // detach() macht das absichtlich NICHT, weil libvlc's Decoder
-    // unmittelbar nach set_callbacks(NULL) noch ein letztes
-    // picture_CopyPixels in einen Buffer aus unserem Pool laufen
-    // lassen kann. Erst wenn der ganze Pump deallociert wird (Coord
-    // released → Pump released, alle libvlc-Threads schon im Teardown),
-    // ist es sicher die Buffer-Memory freizugeben.
-    if (_heldBuffer) {
-        CVPixelBufferRelease(_heldBuffer);
-        _heldBuffer = NULL;
-    }
-    if (_pool) {
-        CVPixelBufferPoolRelease(_pool);
-        _pool = NULL;
+    CVPixelBufferPoolRef poolToRelease = _pool;
+    CVPixelBufferRef heldToRelease = _heldBuffer;
+    _pool = NULL;
+    _heldBuffer = NULL;
+    if (poolToRelease || heldToRelease) {
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+            dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0),
+        ^{
+            if (heldToRelease) CVPixelBufferRelease(heldToRelease);
+            if (poolToRelease) CVPixelBufferPoolRelease(poolToRelease);
+        });
     }
     if (_formatDesc) {
         CFRelease(_formatDesc);
@@ -261,17 +261,39 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     if (_handle) {
         // Callbacks unset'en — libvlc synchronisiert intern dass
         // KEIN neuer Callback nach diesem Aufruf feuert. ABER:
-        // bereits-laufende `picture_CopyPixels`-Calls im libvlc-
-        // Decoder-Thread werden NICHT abgebrochen. Deshalb behalten
-        // wir Pool und _heldBuffer am Leben — bis der ganze Pump
-        // deallociert wird (siehe dealloc).
+        // bereits-laufende `picture_CopyPixels`-Calls in libvlcs
+        // internen Worker-Threads werden NICHT abgebrochen. Sogar
+        // mediaPlayer.stop() joined nicht zwingend alle dieser
+        // Worker (Crash-Report v1.6.4 zeigt picture_CopyPixels
+        // weiterhin laufend NACH stop+detach). Deshalb DEFERED-
+        // RELEASE: Pool und gehaltener Buffer kommen erst nach
+        // 2s weg, garantiert nach jeglicher libvlc-Aktivität.
         libvlc_video_set_callbacks(_handle, NULL, NULL, NULL, NULL);
         libvlc_video_set_format_callbacks(_handle, NULL, NULL);
     }
     _handle = NULL;
     _player = nil;
     _attached = NO;
-    NSLog(@"[VLCFramePump] detached (pool/buffers stay alive bis dealloc)");
+
+    // Pool und _heldBuffer aus den ivars NEHMEN und in einen Block
+    // capturen — der Block hält die Refs am Leben auch wenn der
+    // Pump-Selbst zwischenzeitlich deallociert. Nach 2s Background-
+    // Queue feuert der Block, releaset, fertig.
+    CVPixelBufferPoolRef poolToRelease = _pool;
+    CVPixelBufferRef heldToRelease = _heldBuffer;
+    _pool = NULL;
+    _heldBuffer = NULL;
+    if (poolToRelease || heldToRelease) {
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+            dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0),
+        ^{
+            if (heldToRelease) CVPixelBufferRelease(heldToRelease);
+            if (poolToRelease) CVPixelBufferPoolRelease(poolToRelease);
+            NSLog(@"[VLCFramePump] deferred release of pool/held done");
+        });
+    }
+    NSLog(@"[VLCFramePump] detached (pool/buffers deferred-release in 2s)");
 }
 
 // ─── Internal — vom format_setup Callback aufgerufen ────────────────
