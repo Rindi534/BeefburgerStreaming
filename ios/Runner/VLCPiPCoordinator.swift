@@ -388,7 +388,28 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         skipByInterval skipInterval: CMTime,
         completion completionHandler: @escaping () -> Void
     ) {
-        // PiP-UI Skip-Buttons (10s vor/zurück).
+        // ─── Wichtige Erkenntnis aus mehreren Test-Iterationen ──────
+        //
+        // Bei AVPlayer-PiP (Netflix-Pfad): iOS ruft seek(to:) auf,
+        // AVPlayer macht intern den Seek und ruft completionHandler
+        // ERST wenn neue Frames in der Layer ankommen. iOS wartet auf
+        // completion und sieht den nahtlosen Übergang.
+        //
+        // Bei uns vorher: completionHandler wurde SOFORT nach
+        // `player.time = X` aufgerufen. iOS dachte "Skip durch", aber
+        // libvlc brauchte 500-1500ms bis tatsächlich neue Frames in
+        // unserer DisplayLayer ankamen. In der Zwischenzeit sah iOS
+        // eine stehende Layer und schaltete auf den Pause-Indikator.
+        //
+        // Fix: completion erst aufrufen wenn `framesEnqueued` (Counter
+        // im Pump) wirklich gewachsen ist. Polling alle 50ms, Timeout
+        // bei 2.5s falls libvlc gar keine neuen Frames produziert
+        // (zb defekte Datei). Während des Pollings:
+        //   - skipInProgress=true → isPlaybackPaused antwortet stabil
+        //     "playing"
+        //   - jeder Tick: play() (no-op wenn schon), Timebase rate=1
+        //   - jeder Tick: invalidatePlaybackState damit iOS frisch
+        //     unsere isPlaybackPaused liest
         guard let player = mediaPlayer else {
             completionHandler()
             return
@@ -399,50 +420,56 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         let target = currentMs + deltaMs
         let safe = max(0, target)
 
-        // Skip-In-Progress-Flag setzen damit
-        // pictureInPictureControllerIsPlaybackPaused stabil "playing"
-        // antwortet und das System-PiP-UI nicht auf Pause-Symbol
-        // umschaltet während VLC seekt.
-        if wasPlaying {
-            skipInProgress = true
-        }
+        let baselineFrames = pump?.framesEnqueued ?? 0
+        skipInProgress = wasPlaying
 
         player.time = VLCTime(int: safe)
-
         if wasPlaying {
-            // Aggressiver Resume-Pfad: play() wird in einer Reihe
-            // gestaffelter Ticks abgesetzt — UNCONDITIONAL, auch wenn
-            // VLC denkt es spielt schon (no-op dann). Plus an JEDEM
-            // Tick: Timebase rate=1 zwangshalten + invalidatePlayback-
-            // State damit iOS-PiP seine Pause-Anzeige nicht latcht.
-            //
-            // Beobachtung: VLC kommt manchmal erst nach 1500-2000ms
-            // aus dem Seeking-State raus, dann muss play() nochmal
-            // greifen. Vorher hatten wir nur Retries bis 800ms — das
-            // war zu kurz für lange Seeks.
             player.play()
-            for delayMs in [100, 250, 500, 1000, 1500, 2000, 2500] {
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + .milliseconds(delayMs)
-                ) { [weak self] in
-                    guard let self = self,
-                          let p = self.mediaPlayer else { return }
-                    p.play()  // unconditional — no-op if already playing
-                    if let tb = self.displayLayer.controlTimebase {
-                        CMTimebaseSetRate(tb, rate: 1.0)
-                    }
-                    self.pipController?.invalidatePlaybackState()
-                }
+        }
+
+        let startTs = Date().timeIntervalSince1970
+        let pollMaxSeconds: TimeInterval = 2.5
+        let framesNeeded: UInt64 = 3
+
+        // Recursive poll function — bis zum Frame-Threshold ODER
+        // Timeout. WICHTIG: completionHandler darf NUR EINMAL
+        // aufgerufen werden — guard via local flag.
+        var didComplete = false
+        func tick() {
+            if didComplete { return }
+            // Pro-Tick: play+timebase+invalidate damit iOS-PiP
+            // konsistent "playing" sieht.
+            if let p = self.mediaPlayer {
+                p.play()
             }
-            // Flag nach 3s zurücksetzen — gibt selbst sehr trägen
-            // Seeks Zeit zu fertigwerden.
+            if let tb = self.displayLayer.controlTimebase {
+                CMTimebaseSetRate(tb, rate: 1.0)
+            }
+            self.pipController?.invalidatePlaybackState()
+
+            let now = Date().timeIntervalSince1970
+            let elapsed = now - startTs
+            let curFrames = self.pump?.framesEnqueued ?? 0
+            let gotFrames = curFrames >= baselineFrames + framesNeeded
+            let timedOut = elapsed >= pollMaxSeconds
+
+            if gotFrames || timedOut {
+                didComplete = true
+                self.skipInProgress = false
+                self.pipController?.invalidatePlaybackState()
+                NSLog("[VLCPiP] skip done: gotFrames=\(gotFrames) " +
+                      "timedOut=\(timedOut) elapsed=\(elapsed)s " +
+                      "frameDelta=\(curFrames - baselineFrames)")
+                completionHandler()
+                return
+            }
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + 3.0
-            ) { [weak self] in
-                self?.skipInProgress = false
-                self?.pipController?.invalidatePlaybackState()
+                deadline: .now() + .milliseconds(50)
+            ) {
+                tick()
             }
         }
-        completionHandler()
+        tick()
     }
 }
