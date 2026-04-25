@@ -364,9 +364,37 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             result(nil)
         case "setSubtitleTrack":
             // id = -1 schaltet Untertitel aus (VLC-Konvention).
+            //
+            // Wir setzen den Track auf BEIDEN Pfaden:
+            //   1. MobileVLCKits Setter (für interne Konsistenz —
+            //      `currentVideoSubTitleIndex` wird in der UI ausgelesen).
+            //   2. Direkter libvlc_video_set_spu — das ist der Pfad der
+            //      tatsächlich auf den vmem-Vout-Renderer durchschlägt.
+            //      In MobileVLCKit 3.5 wirkt der ObjC-Setter mit unserer
+            //      Frame-Pump-Pipeline nicht zuverlässig.
+            //
+            // Diagnose-Snackbar geht via "subDebug"-Event mit dem libvlc-
+            // Status, damit ich am iPhone sehen kann was wirklich passiert.
             if let args = call.arguments as? [String: Any],
                let id = args["id"] as? Int {
                 mediaPlayer.currentVideoSubTitleIndex = Int32(id)
+                var libvlcOk = false
+                var libvlcCurrent = -1
+                if #available(iOS 15.0, *),
+                   let coord = pipCoordinator as? VLCPiPCoordinator {
+                    libvlcOk = coord.setSubtitleTrackViaLibvlc(id)
+                    libvlcCurrent = coord.currentSubtitleTrackViaLibvlc
+                }
+                NSLog("[VLCPlayer] setSubtitleTrack: id=\(id) " +
+                      "wrapper=\(mediaPlayer.currentVideoSubTitleIndex) " +
+                      "libvlc-set=\(libvlcOk) libvlc-current=\(libvlcCurrent)")
+                eventSink.send([
+                    "event": "subDebug",
+                    "requestedId": id,
+                    "wrapperCurrent": Int(mediaPlayer.currentVideoSubTitleIndex),
+                    "libvlcSetOk": libvlcOk,
+                    "libvlcCurrent": libvlcCurrent,
+                ])
             }
             result(nil)
         case "isPiPPossible":

@@ -77,6 +77,12 @@ extern void libvlc_video_set_format_callbacks(libvlc_media_player_t *p_mi,
                                                libvlc_video_format_cb setup,
                                                libvlc_video_cleanup_cb cleanup);
 
+// Subtitle/SPU control (direkter libvlc-API-Pfad, statt
+// MobileVLCKits currentVideoSubTitleIndex-Setter — der scheint in
+// 3.5.x nicht zuverlässig durchzuschlagen wenn vmem-Vout aktiv ist).
+extern int libvlc_video_set_spu(libvlc_media_player_t *p_mi, int i_spu);
+extern int libvlc_video_get_spu(libvlc_media_player_t *p_mi);
+
 // ─── Internal context ──────────────────────────────────────────────
 
 @interface VLCFramePump () {
@@ -104,6 +110,20 @@ extern void libvlc_video_set_format_callbacks(libvlc_media_player_t *p_mi,
 
     // Lock-Counter um doppelte attach() abzufangen.
     BOOL _attached;
+
+    // Crash-Schutz: Buffer aus dem VORHERIGEN Frame, hier festgehalten
+    // bis der NÄCHSTE Frame-Cycle vollständig durch ist. Begründung:
+    // libvlc's Decoder-Thread macht `picture_CopyPixels` (= memmove
+    // auf unseren Buffer) als Teil des picture-Lifecycles, und die
+    // Operation kann ÜBER unlock_cb hinausreichen — vorallem wenn
+    // gerade detach() / Player-Stop läuft. Wenn wir zu früh
+    // CFReleasen, schreibt libvlc in eine schon-freigegebene Memory-
+    // Region → SIGSEGV in `_platform_memmove` (Crash-Report v1.6.2).
+    // Lösung: 1-Frame-Lag — wir holden jeden Buffer für die Dauer
+    // eines Frames extra. Erst beim nächsten unlock_cb wird der
+    // Vorgänger released. Bei 24-60fps ist der Lag 16-42ms — zur
+    // libvlc-Pipeline-Latenz vernachlässigbar.
+    CVPixelBufferRef _heldBuffer;
 }
 @property (nonatomic, weak, readwrite) AVSampleBufferDisplayLayer *displayLayer;
 @property (atomic, readwrite) uint64_t framesEnqueued;
@@ -145,9 +165,7 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     // wäre das ein use-after-free wartend zu passieren: libvlc
     // ruft `lock_cb(opaque=self)` aus seinem Decoder-Thread auf,
     // self ist aber schon dealloziert → crash. Deshalb hier noch
-    // einmal forcieren bevor wir die ivars freigeben. Der
-    // libvlc-set_callbacks(NULL)-Call wartet intern auf alle in-
-    // flight-Callbacks; nach dem return ist es sicher.
+    // einmal forcieren bevor wir die ivars freigeben.
     if (_attached) {
         NSLog(@"[VLCFramePump] WARN: dealloc ohne vorheriges detach — forciere");
         if (_handle) {
@@ -156,6 +174,17 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         }
         _attached = NO;
         _handle = NULL;
+    }
+    // Erst HIER (im dealloc) den Pool und gehaltene Buffer freigeben.
+    // detach() macht das absichtlich NICHT, weil libvlc's Decoder
+    // unmittelbar nach set_callbacks(NULL) noch ein letztes
+    // picture_CopyPixels in einen Buffer aus unserem Pool laufen
+    // lassen kann. Erst wenn der ganze Pump deallociert wird (Coord
+    // released → Pump released, alle libvlc-Threads schon im Teardown),
+    // ist es sicher die Buffer-Memory freizugeben.
+    if (_heldBuffer) {
+        CVPixelBufferRelease(_heldBuffer);
+        _heldBuffer = NULL;
     }
     if (_pool) {
         CVPixelBufferPoolRelease(_pool);
@@ -211,31 +240,38 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     return YES;
 }
 
+- (BOOL)setSPUTrack:(int)trackId
+{
+    if (!_handle) return NO;
+    int rc = libvlc_video_set_spu(_handle, trackId);
+    NSLog(@"[VLCFramePump] libvlc_video_set_spu(%d) → rc=%d, current=%d",
+          trackId, rc, libvlc_video_get_spu(_handle));
+    return rc == 0;
+}
+
+- (int)currentSPUTrack
+{
+    if (!_handle) return -1;
+    return libvlc_video_get_spu(_handle);
+}
+
 - (void)detach
 {
     if (!_attached) return;
     if (_handle) {
         // Callbacks unset'en — libvlc synchronisiert intern dass
-        // KEIN Callback mehr nach diesem Aufruf feuert.
+        // KEIN neuer Callback nach diesem Aufruf feuert. ABER:
+        // bereits-laufende `picture_CopyPixels`-Calls im libvlc-
+        // Decoder-Thread werden NICHT abgebrochen. Deshalb behalten
+        // wir Pool und _heldBuffer am Leben — bis der ganze Pump
+        // deallociert wird (siehe dealloc).
         libvlc_video_set_callbacks(_handle, NULL, NULL, NULL, NULL);
         libvlc_video_set_format_callbacks(_handle, NULL, NULL);
     }
     _handle = NULL;
     _player = nil;
     _attached = NO;
-
-    if (_pool) {
-        CVPixelBufferPoolRelease(_pool);
-        _pool = NULL;
-    }
-    if (_formatDesc) {
-        CFRelease(_formatDesc);
-        _formatDesc = NULL;
-    }
-    _width = 0;
-    _height = 0;
-    _pitch = 0;
-    NSLog(@"[VLCFramePump] detached");
+    NSLog(@"[VLCFramePump] detached (pool/buffers stay alive bis dealloc)");
 }
 
 // ─── Internal — vom format_setup Callback aufgerufen ────────────────
@@ -450,12 +486,21 @@ static void *VLCPump_LockCB(void *opaque, void **planes)
     return (void *)buffer;
 }
 
-/// VLC ist fertig mit dem Buffer. Wir unlocken, wrappen als
-/// CMSampleBuffer und enqueuen. Danach release der CVPixelBuffer-
-/// Referenz die wir in lock_cb behalten haben (CMSampleBuffer
-/// hat eine eigene Referenz drauf solange er gequeued ist).
+/// VLC ist nominell fertig mit dem Buffer. Wir unlocken, enqueuen
+/// als CMSampleBuffer — und behalten den CVPixelBufferRef für eine
+/// Frame-Periode festgehalten, statt ihn sofort zu releasen.
+///
+/// Warum 1-Frame-Lag: libvlc's `picture_CopyPixels` (= memmove des
+/// Decoder-Outputs in unseren Buffer) kann ÜBER unlock_cb hinaus
+/// laufen — vorallem wenn gerade ein Player-Stop / detach läuft.
+/// Wenn wir hier sofort CFReleasen und der Buffer wird recycled
+/// (oder die Memory freigegeben), schreibt libvlc in eine ungültige
+/// Region → SIGSEGV in `_platform_memmove` (siehe Crash-Report
+/// v1.6.2). Mit dem 1-Frame-Hold-Off ist die in-flight memmove
+/// längst durch wenn der Buffer eventually released wird.
 static void VLCPump_UnlockCB(void *opaque, void *picture, void *const *planes)
 {
+    (void)planes;
     VLCFramePump *pump = (__bridge VLCFramePump *)opaque;
     CVPixelBufferRef buffer = (CVPixelBufferRef)picture;
     if (!buffer) return;
@@ -463,8 +508,18 @@ static void VLCPump_UnlockCB(void *opaque, void *picture, void *const *planes)
     CVPixelBufferUnlockBaseAddress(buffer, 0);
     if (pump) {
         [pump _enqueueBufferFromPicture:buffer];
+        // 1-Frame-Lag: aktueller Buffer wird gehalten, der vorherige
+        // (falls vorhanden) jetzt freigegeben — dessen libvlc-Memcpy
+        // ist garantiert durch.
+        CVPixelBufferRef previous = pump->_heldBuffer;
+        pump->_heldBuffer = buffer; // takes our retain
+        if (previous) {
+            CVPixelBufferRelease(previous);
+        }
+    } else {
+        // Pump ist weg → trotzdem release, sonst Buffer-Leak.
+        CVPixelBufferRelease(buffer);
     }
-    CVPixelBufferRelease(buffer);
 }
 
 static void VLCPump_DisplayCB(void *opaque, void *picture)

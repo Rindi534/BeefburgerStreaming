@@ -62,6 +62,12 @@ class IOSVLCPlayerController {
   final _probeCtrl = StreamController<({bool ok, String message})>.broadcast();
   Stream<({bool ok, String message})> get probeStream => _probeCtrl.stream;
 
+  // Subtitle-Diagnose: zeigt was nach setSubtitleTrack tatsächlich
+  // bei libvlc angekommen ist. Wird als SnackBar im Player-Screen
+  // angezeigt um zu klären warum die Subs nicht erscheinen.
+  final _subDebugCtrl = StreamController<String>.broadcast();
+  Stream<String> get subDebugStream => _subDebugCtrl.stream;
+
   Duration get position => _position;
   Duration get duration => _duration;
   bool get isPlaying => _playing;
@@ -115,6 +121,15 @@ class IOSVLCPlayerController {
         final ok = raw['ok'] as bool? ?? false;
         final msg = raw['message'] as String? ?? '(no message)';
         _probeCtrl.add((ok: ok, message: msg));
+        break;
+      case 'subDebug':
+        final reqId = raw['requestedId'];
+        final wrapper = raw['wrapperCurrent'];
+        final libOk = raw['libvlcSetOk'];
+        final libCur = raw['libvlcCurrent'];
+        _subDebugCtrl.add(
+          'sub req=$reqId wrap=$wrapper lib-ok=$libOk lib-cur=$libCur',
+        );
         break;
     }
   }

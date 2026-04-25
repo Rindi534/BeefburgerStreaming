@@ -276,6 +276,19 @@ class VLCPiPCoordinator: NSObject {
     func stopPiP() {
         pipController?.stopPictureInPicture()
     }
+
+    /// Direkter libvlc-Subtitle-Setter. Umgeht
+    /// MobileVLCKits currentVideoSubTitleIndex weil der Setter
+    /// in 3.5.x mit unserem vmem-Vout-Pfad nicht zu wirken scheint.
+    /// Returnt YES wenn libvlc den Wechsel akzeptiert hat.
+    @discardableResult
+    func setSubtitleTrackViaLibvlc(_ id: Int) -> Bool {
+        return pump?.setSPUTrack(Int32(id)) ?? false
+    }
+
+    var currentSubtitleTrackViaLibvlc: Int {
+        return Int(pump?.currentSPUTrack() ?? -1)
+    }
 }
 
 // MARK: - AVPictureInPictureControllerDelegate
@@ -362,11 +375,21 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
             completionHandler()
             return
         }
+        let wasPlaying = player.isPlaying
         let currentMs = player.time.intValue
         let deltaMs = Int32(CMTimeGetSeconds(skipInterval) * 1000)
         let target = currentMs + deltaMs
         let safe = max(0, target)
         player.time = VLCTime(int: safe)
+        // VLC pausiert beim Setter von `time` intern kurz und resumed
+        // dann selbständig — manchmal aber NICHT, vorallem wenn der
+        // Seek über Keyframe-Grenzen läuft. Dann bleibt der Player
+        // pausiert nach dem Skip und der User muss manuell Play
+        // drücken im PiP-UI. Wir erzwingen das hier, damit das Skip
+        // sich wie bei Netflix anfühlt: tap → ohne Pause weiter.
+        if wasPlaying {
+            player.play()
+        }
         completionHandler()
     }
 }

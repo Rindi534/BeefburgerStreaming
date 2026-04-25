@@ -67,6 +67,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// → Crash.
 - (void)detach;
 
+/// Setzt die Subtitle-Spur direkt via libvlc-C-API (umgeht
+/// MobileVLCKits currentVideoSubTitleIndex-Setter, der in 3.5.x mit
+/// vmem-Vout-Mode nicht zuverlässig durchschlägt).
+/// id = -1 schaltet Subs aus, sonst libvlc-interner Track-Index.
+/// Returns NO wenn der Player nicht attached oder libvlc den Set
+/// abgelehnt hat.
+- (BOOL)setSPUTrack:(int)trackId;
+
+/// Liest aktuelle Sub-Track-ID vom libvlc-Player. -1 = aus, sonst ID.
+- (int)currentSPUTrack;
+
 @end
 
 NS_ASSUME_NONNULL_END

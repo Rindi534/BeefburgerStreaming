@@ -278,23 +278,20 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       setState(() => _pipAvailable = avail);
     });
 
-    // Diagnose: einmaliges Probe-Ergebnis von VLCPlayerPlugin.swift.
-    // Sehe ich aktuell ohne Xcode-Console nur über diesen SnackBar-
-    // Pfad — wenn das hier "OK: handle=..." anzeigt, sind wir grün
-    // für Schritt 2 (echte AVSampleBufferDisplayLayer-Pipeline).
-    ctrl.probeStream.listen((res) {
+    // Subtitle-Diagnose. Triggers nur wenn der User einen Sub-Track
+    // wechselt — zeigt was tatsächlich bei libvlc ankommt vs. was
+    // wir gesetzt haben. Mit dem Output kann ich gezielt hingehen
+    // und entweder die wrapper-API fixen oder den vmem-OSD-Pfad
+    // anders konfigurieren.
+    ctrl.subDebugStream.listen((msg) {
       if (!mounted) return;
       final messenger = ScaffoldMessenger.maybeOf(context);
       messenger?.showSnackBar(
         SnackBar(
-          duration: const Duration(seconds: 12),
+          duration: const Duration(seconds: 8),
           content: Text(
-            'PiP-Probe ${res.ok ? "✅" : "❌"}: ${res.message}',
+            msg,
             style: const TextStyle(fontFamily: 'Courier', fontSize: 12),
-          ),
-          action: SnackBarAction(
-            label: 'OK',
-            onPressed: () => messenger.hideCurrentSnackBar(),
           ),
         ),
       );
