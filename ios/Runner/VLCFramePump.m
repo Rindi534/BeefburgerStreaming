@@ -80,6 +80,11 @@ extern void libvlc_video_set_format_callbacks(libvlc_media_player_t *p_mi,
 // ─── Internal context ──────────────────────────────────────────────
 
 @interface VLCFramePump () {
+    // ivars sind @public weil die statischen C-Callbacks
+    // (VLCPump_FormatSetupCB, VLCPump_LockCB, ...) direkt darauf
+    // zugreifen müssen. ObjC-Property-Accessoren wären für die
+    // Frame-Hot-Path zu teuer (Methoden-Dispatch pro Frame).
+    @public
     // C-Handle bleibt während der Pump attached ist gültig.
     // weak-Ref auf den ObjC-Wrapper hält uns davor dass libvlc
     // freigegeben wird ohne dass wir vorher die Callbacks unset'en.
