@@ -62,6 +62,17 @@ class VLCPiPCoordinator: NSObject {
     // Wenn 20 fps auf älteren Geräten jankt, geht's wieder runter oder
     // wir ziehen libvlc_video_set_callbacks direkt (Session 3b).
     private let captureFPS: Int = 20
+    /// Boost-Rate während des Auto-Next-Swap-Fensters. Wenn libvlc nach
+    /// dem Media-Wechsel im Background-PiP-Modus den Video-Output spät
+    /// hochfährt, wollen wir den allerersten verfügbaren Frame sofort
+    /// einfangen — sonst sieht der User die schwarze Layer eine halbe
+    /// Sekunde länger als nötig. 40 Hz ist ein 2× Boost, kostet nur
+    /// während der wenigen Sekunden des Swap-Fensters extra CPU.
+    private let captureFPSBoost: Int = 40
+    /// True solange wir im Boost-Modus sind. Verhindert dass parallele
+    /// mediaWillChange()-Aufrufe (die theoretisch nicht passieren sollten)
+    /// den Link zigmal neu aufsetzen.
+    private var captureBoostActive: Bool = false
 
     /// Temp-Pfad für saveVideoSnapshotAt. Reusen wir pro Tick, dann
     /// bleibt der Inode stabil und der Filesystem-Cache warm.
@@ -265,7 +276,13 @@ class VLCPiPCoordinator: NSObject {
         if displayLayer.status != .failed {
             displayLayer.flushAndRemoveImage()
         }
-        NSLog("[VLCPiP] mediaWillChange: swap-window=15s, layer flushed")
+        // Capture-Loop für die Dauer des Swap-Fensters auf 40 Hz
+        // hochziehen. Sobald der erste Frame der neuen Folge dekodiert
+        // ist, wollen wir ihn innerhalb von ~25 ms in der PiP-Layer
+        // haben statt potenziell 50 ms zu warten — bei sonst schwarzer
+        // Layer ist das ein direkt sichtbarer Unterschied.
+        boostCaptureForSwap(seconds: 15.0)
+        NSLog("[VLCPiP] mediaWillChange: swap-window=15s, layer flushed, capture boosted to \(captureFPSBoost)Hz")
     }
 
     func detach() {
@@ -319,19 +336,42 @@ class VLCPiPCoordinator: NSObject {
 
     // MARK: - Frame pipeline
 
-    private func startCapture() {
+    private func startCapture(fps: Int? = nil) {
         stopCapture()
+        let rate = fps ?? captureFPS
         let link = CADisplayLink(target: self, selector: #selector(tick))
         if #available(iOS 15.0, *) {
             link.preferredFrameRateRange = CAFrameRateRange(
-                minimum: Float(captureFPS),
-                maximum: Float(captureFPS),
-                preferred: Float(captureFPS))
+                minimum: Float(rate),
+                maximum: Float(rate),
+                preferred: Float(rate))
         } else {
-            link.preferredFramesPerSecond = captureFPS
+            link.preferredFramesPerSecond = rate
         }
         link.add(to: .main, forMode: .common)
         captureLink = link
+    }
+
+    /// Startet den Capture-Link auf der Boost-Rate (siehe `captureFPSBoost`)
+    /// und timer-resetted ihn nach `seconds` zurück auf die normale
+    /// Rate. Wird von mediaWillChange() aufgerufen, damit wir nach
+    /// einem Auto-Next-Swap den ersten neuen Frame mit minimaler Latenz
+    /// erwischen — der reguläre 20 Hz-Takt kann ihn um bis zu 50 ms
+    /// verfehlen, was bei einer schon schwarzen Layer schmerzhaft
+    /// sichtbar ist.
+    private func boostCaptureForSwap(seconds: TimeInterval) {
+        if captureBoostActive { return }
+        captureBoostActive = true
+        startCapture(fps: captureFPSBoost)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self = self else { return }
+            self.captureBoostActive = false
+            // Nur zurückschalten wenn der Capture-Loop noch läuft.
+            // Wenn wir zwischenzeitlich detached wurden, lassen wir's.
+            if self.captureLink != nil {
+                self.startCapture()
+            }
+        }
     }
 
     private func stopCapture() {

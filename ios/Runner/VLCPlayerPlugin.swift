@@ -199,17 +199,34 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
     private func loadMedia(urlString: String,
                            subtitleUrl: String?,
-                           startSeconds: Double) {
+                           startSeconds: Double,
+                           keepVoutAlive: Bool = false) {
         guard let url = resolveUrl(urlString) else {
             eventSink.send(["event": "error",
                             "message": "Ungültiger Pfad: \(urlString)"])
             return
         }
 
-        // Stop + neue Media. VLCMediaPlayer behandelt das korrekt auch
-        // wenn wir mitten in einer laufenden Wiedergabe sind — wird
-        // für den "nächste Episode inline tauschen"-Pfad gebraucht.
-        mediaPlayer.stop()
+        // VLCMediaPlayer's setter `media =` ruft intern bereits
+        // libvlc_media_player_stop() auf bevor es die neue Media setzt.
+        // Der explizite stop() hier davor war redundant UND kontra-
+        // produktiv im PiP-Background-Pfad: er hat einen ZWEITEN
+        // Teardown-Zyklus angestoßen, der mit dem play()-Restart
+        // ganz unten gerace't ist. In Foreground egal, in Background
+        // (PiP aktiv, App suspended bis auf Audio) hat das libvlc's
+        // vout-Modul beim Hochfahren der neuen Folge tot gemacht
+        // → Audio läuft, Video bleibt schwarz. (User-Bugreport v1.5.32.)
+        //
+        // `keepVoutAlive` markiert den Auto-Next-Pfad explizit; in
+        // dem Fall verzichten wir auf den expliziten stop und vertrauen
+        // dem Setter. Beim regulären Erst-Load (keepVoutAlive=false,
+        // mediaPlayer hat noch keine Media) ist stop() ein No-op
+        // sowieso — wir lassen ihn aber drin damit das Verhalten
+        // identisch bleibt zu vorher und wir keinen Regression-
+        // Vektor in den foreground-Erstaufruf einbauen.
+        if !keepVoutAlive {
+            mediaPlayer.stop()
+        }
 
         let media = VLCMedia(url: url)
 
@@ -341,7 +358,8 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             }
             loadMedia(urlString: media,
                       subtitleUrl: sub,
-                      startSeconds: start)
+                      startSeconds: start,
+                      keepVoutAlive: true)
             // Drawable-Kick: nach dem stop/play-Zyklus von loadMedia
             // den drawable-Handle einmal lösen und wieder dranhängen.
             // Während PiP aktiv ist (App im Background) verpasst
