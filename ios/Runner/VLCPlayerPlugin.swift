@@ -134,6 +134,27 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.mediaPlayer.drawable = self.videoView
         self.mediaPlayer.delegate = self
 
+        // ─── PiP-Pipeline-Probe (Schritt 1 von "echtes PiP für VLC") ───
+        // Prüft ob wir an libvlcs C-Handle UND an die libvlc-C-API
+        // ranlinken können. Storrt das Playback NICHT — setzt nur
+        // einen Read-Only-Call ab. Ergebnis fliegt als "probeResult"
+        // -Event zur Dart-Seite, die's dann als Snackbar anzeigt.
+        var probeMsg: NSString? = nil
+        let probeOk = VLCProbeLibvlcHandle(self.mediaPlayer,
+                                            &probeMsg)
+        let probeText = (probeMsg as String?) ?? "no diagnostic"
+        NSLog("[VLCPlayer] probeLibvlcHandle ok=\(probeOk): \(probeText)")
+        // Senden wir nach kurzer Verzögerung — der EventSink kann erst
+        // empfangen sobald Dart den EventChannel attached hat. 200 ms
+        // sind reichlich Puffer.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.eventSink.send([
+                "event": "probeResult",
+                "ok": probeOk,
+                "message": probeText,
+            ])
+        }
+
         self.eventChannel.setStreamHandler(self.eventSink)
         self.methodChannel.setMethodCallHandler { [weak self] call, result in
             self?.handleMethodCall(call, result: result)

@@ -57,6 +57,10 @@ class IOSVLCPlayerController {
   final _errorCtrl = StreamController<String>.broadcast();
   final _pipActiveCtrl = StreamController<bool>.broadcast();
   final _pipAvailableCtrl = StreamController<bool>.broadcast();
+  // Diagnose-Stream: einmalig die Probe-Botschaft aus VLCPlayerPlugin.swift
+  // Schritt 1 von "echtes PiP für VLC". UI zeigt das als Snackbar an.
+  final _probeCtrl = StreamController<({bool ok, String message})>.broadcast();
+  Stream<({bool ok, String message})> get probeStream => _probeCtrl.stream;
 
   Duration get position => _position;
   Duration get duration => _duration;
@@ -106,6 +110,11 @@ class IOSVLCPlayerController {
       case 'pipAvailability':
         _pipAvailable = raw['value'] as bool? ?? false;
         _pipAvailableCtrl.add(_pipAvailable);
+        break;
+      case 'probeResult':
+        final ok = raw['ok'] as bool? ?? false;
+        final msg = raw['message'] as String? ?? '(no message)';
+        _probeCtrl.add((ok: ok, message: msg));
         break;
     }
   }

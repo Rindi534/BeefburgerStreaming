@@ -277,6 +277,28 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       if (!mounted) return;
       setState(() => _pipAvailable = avail);
     });
+
+    // Diagnose: einmaliges Probe-Ergebnis von VLCPlayerPlugin.swift.
+    // Sehe ich aktuell ohne Xcode-Console nur über diesen SnackBar-
+    // Pfad — wenn das hier "OK: handle=..." anzeigt, sind wir grün
+    // für Schritt 2 (echte AVSampleBufferDisplayLayer-Pipeline).
+    ctrl.probeStream.listen((res) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 12),
+          content: Text(
+            'PiP-Probe ${res.ok ? "✅" : "❌"}: ${res.message}',
+            style: const TextStyle(fontFamily: 'Courier', fontSize: 12),
+          ),
+          action: SnackBarAction(
+            label: 'OK',
+            onPressed: () => messenger.hideCurrentSnackBar(),
+          ),
+        ),
+      );
+    });
   }
 
   /// Orientation zurück auf Portrait-Lock (App-global). Muss VOR
