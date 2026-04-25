@@ -405,15 +405,25 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                 result(false)
             }
         case "dispose":
-            // Gleiche Reihenfolge wie deinit (siehe Crash-Doku unten):
-            // delegate=nil zuerst, dann coord.detach, dann stop.
+            // Reihenfolge KRITISCH (Crash-Bug v1.6.3 — picture_CopyPixels
+            // → memmove → far=0 in libvlcs Decoder-Thread während
+            // wir den Pool schon weggeräumt hatten):
+            //
+            //   1. delegate = nil  → keine .stopped-Notifications mehr.
+            //   2. coord.detach() → libvlc_video_set_callbacks(NULL).
+            //      Stoppt NEUE Callback-Aufrufe. POOL bleibt am Leben.
+            //   3. mediaPlayer.stop() → libvlc-Decoder-Thread joined,
+            //      KEINE neuen picture_CopyPixels mehr in flight.
+            //   4. pipCoordinator = nil → erst JETZT wird der pump
+            //      released → CVPixelBufferPool freigegeben. Da libvlc
+            //      durch ist, ist's sicher die Memory rauszuwerfen.
             mediaPlayer.delegate = nil
             if #available(iOS 15.0, *),
                let coord = pipCoordinator as? VLCPiPCoordinator {
                 coord.detach()
             }
-            pipCoordinator = nil
             mediaPlayer.stop()
+            pipCoordinator = nil
             result(nil)
         default:
             result(FlutterMethodNotImplemented)
@@ -457,28 +467,16 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     // MARK: - Lifecycle
 
     deinit {
-        // Reihenfolge ist KRITISCH (Crash-Bug v1.6.1):
-        //
-        // 1. delegate = nil ZUERST. mediaPlayer.stop() unten feuert
-        //    ein .stopped-State-Event. Wenn das während dem dealloc-
-        //    Pfad an self (= delegate) zugestellt wird, dispatchen
-        //    wir auf eine halb-deallozierte Instanz → use-after-free.
-        //    Erst delegate=nil setzen, DANN stop() — Notifications
-        //    landen ins Leere statt in unserem dealloc.
-        //
-        // 2. PiP-Coordinator detach'en — räumt den Frame-Pump und
-        //    seine libvlc-Callbacks ab. libvlc_video_set_callbacks(NULL)
-        //    ist synchron, blockt bis alle Decoder-Thread-Callbacks
-        //    fertig sind.
-        //
-        // 3. Erst dann mediaPlayer.stop().
+        // Identische Reihenfolge wie im "dispose" MethodCall — siehe
+        // Erklärung dort. Kurzform: delegate=nil → callbacks=NULL →
+        // stop → erst dann den Coord/Pump released.
         mediaPlayer.delegate = nil
         if #available(iOS 15.0, *),
            let coord = pipCoordinator as? VLCPiPCoordinator {
             coord.detach()
         }
-        pipCoordinator = nil
         mediaPlayer.stop()
+        pipCoordinator = nil
     }
 }
 

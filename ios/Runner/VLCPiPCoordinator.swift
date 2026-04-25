@@ -241,9 +241,9 @@ class VLCPiPCoordinator: NSObject {
     deinit {
         // Sicherheitsnetz für den Fall dass detach() nicht explizit
         // aufgerufen wurde (zb wenn Flutter die PlatformView teardown
-        // ohne dispose-MethodCall durchläuft). Wenn wir ohne pump-
-        // detach deallociert würden, würden libvlc-Callbacks gegen
-        // einen toten ObjC-Pointer feuern → use-after-free Crash.
+        // ohne dispose-MethodCall durchläuft).
+        timebaseSyncTimer?.invalidate()
+        timebaseSyncTimer = nil
         if pump != nil {
             NSLog("[VLCPiP] deinit ohne vorheriges detach — räume nach")
             pump?.detach()
@@ -381,14 +381,32 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         let target = currentMs + deltaMs
         let safe = max(0, target)
         player.time = VLCTime(int: safe)
-        // VLC pausiert beim Setter von `time` intern kurz und resumed
-        // dann selbständig — manchmal aber NICHT, vorallem wenn der
-        // Seek über Keyframe-Grenzen läuft. Dann bleibt der Player
-        // pausiert nach dem Skip und der User muss manuell Play
-        // drücken im PiP-UI. Wir erzwingen das hier, damit das Skip
-        // sich wie bei Netflix anfühlt: tap → ohne Pause weiter.
+
+        // VLC pausiert beim Seek intern und braucht ein paar 100ms
+        // bis der Decoder neu gepuffert hat. Ein synchroner play()
+        // direkt nach dem Setter wird oft IGNORIERT weil VLC noch
+        // im "seeking"-State steckt. Lösung: den play()-Call mit
+        // mehreren gestaffelten Versuchen über die nächsten ~600ms
+        // verteilt rausschicken — sobald VLC wieder bereit ist,
+        // greift der erste der Calls und der Rest ist No-op.
+        // Zusätzlich Timebase explizit auf rate=1 ziehen, damit das
+        // System-PiP-UI nicht denkt der Player wäre pausiert.
         if wasPlaying {
             player.play()
+            for delayMs in [100, 250, 500] {
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + .milliseconds(delayMs)
+                ) { [weak self] in
+                    guard let self = self,
+                          let p = self.mediaPlayer else { return }
+                    if !p.isPlaying {
+                        p.play()
+                    }
+                    if let tb = self.displayLayer.controlTimebase {
+                        CMTimebaseSetRate(tb, rate: 1.0)
+                    }
+                }
+            }
         }
         completionHandler()
     }
