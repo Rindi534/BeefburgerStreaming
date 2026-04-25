@@ -427,7 +427,18 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     // MARK: - Lifecycle
 
     deinit {
+        // Reihenfolge ist wichtig: ZUERST den PiP-Coordinator detach'en
+        // (der hält den Frame-Pump und damit die libvlc-Callback-
+        // Bindings), DANN erst mediaPlayer.stop(). Ohne den detach
+        // davor würden libvlc's Decoder-Thread-Callbacks gegen einen
+        // gerade freigegebenen Pump feuern → use-after-free Crash.
+        if #available(iOS 15.0, *),
+           let coord = pipCoordinator as? VLCPiPCoordinator {
+            coord.detach()
+        }
+        pipCoordinator = nil
         mediaPlayer.stop()
+        mediaPlayer.delegate = nil
     }
 }
 

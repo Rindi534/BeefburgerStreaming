@@ -141,12 +141,21 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
 - (void)dealloc
 {
-    // Sicherheitsnetz. Wenn jemand vergisst detach aufzurufen,
-    // räumen wir hier weg. Aber: VLC sollte bis zu diesem Zeitpunkt
-    // schon stop()/release() durch sein, sonst feuern Callbacks
-    // gegen einen toten Pump.
+    // Sicherheitsnetz. Wenn der Caller vergisst detach() aufzurufen,
+    // wäre das ein use-after-free wartend zu passieren: libvlc
+    // ruft `lock_cb(opaque=self)` aus seinem Decoder-Thread auf,
+    // self ist aber schon dealloziert → crash. Deshalb hier noch
+    // einmal forcieren bevor wir die ivars freigeben. Der
+    // libvlc-set_callbacks(NULL)-Call wartet intern auf alle in-
+    // flight-Callbacks; nach dem return ist es sicher.
     if (_attached) {
-        NSLog(@"[VLCFramePump] WARN: dealloc ohne vorheriges detach");
+        NSLog(@"[VLCFramePump] WARN: dealloc ohne vorheriges detach — forciere");
+        if (_handle) {
+            libvlc_video_set_callbacks(_handle, NULL, NULL, NULL, NULL);
+            libvlc_video_set_format_callbacks(_handle, NULL, NULL);
+        }
+        _attached = NO;
+        _handle = NULL;
     }
     if (_pool) {
         CVPixelBufferPoolRelease(_pool);

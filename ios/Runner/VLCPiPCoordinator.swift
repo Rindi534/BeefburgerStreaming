@@ -34,14 +34,42 @@ import AVFoundation
 import MobileVLCKit
 import UIKit
 
+/// Wrapt `AVSampleBufferDisplayLayer` in eine UIView, damit sie mit
+/// dem normalen UIView-Layout-System mitresized wird (autoresizing-
+/// Mask, Constraints, layoutSubviews). Eine "nackte" CALayer hat das
+/// alles nicht — sie behält ihren initial gesetzten Frame bis man sie
+/// manuell anfasst, was zu der fehlerhaften Skalierung in v1.6.0 geführt
+/// hat (Layer war 1280×720 fixed, hostView war zb 390×220 → Bild
+/// gigantisch und am rechten Rand abgeschnitten).
+@available(iOS 15.0, *)
+final class VLCDisplayLayerView: UIView {
+    override class var layerClass: AnyClass {
+        return AVSampleBufferDisplayLayer.self
+    }
+    var displayLayer: AVSampleBufferDisplayLayer {
+        return layer as! AVSampleBufferDisplayLayer
+    }
+}
+
 @available(iOS 15.0, *)
 class VLCPiPCoordinator: NSObject {
-    /// Die Layer in die der Pump die Frames enqueued, und die
-    /// AVPictureInPictureController als Content-Source bekommt.
-    let displayLayer: AVSampleBufferDisplayLayer
+    /// View die die Sample-Buffer-Display-Layer hostet. Wird beim
+    /// attach() in `hostView` als Subview eingehängt mit Auto-
+    /// Resize, also passt sie sich automatisch an Rotation /
+    /// Player-Container-Resize an.
+    private let displayView: VLCDisplayLayerView
 
-    /// Host-View in der die Layer gemountet ist. Muss in der View-
-    /// Hierarchie bleiben, sonst stoppt iOS PiP.
+    /// Convenience-Accessor: die eigentliche Layer hängt direkt an
+    /// displayView (über das `layerClass`-Override). Wird sowohl als
+    /// Render-Senke vom FramePump benutzt als auch als
+    /// `ContentSource(sampleBufferDisplayLayer:)` an den
+    /// AVPictureInPictureController.
+    var displayLayer: AVSampleBufferDisplayLayer {
+        return displayView.displayLayer
+    }
+
+    /// Host-View in der unsere displayView gemountet ist. Muss in der
+    /// View-Hierarchie bleiben, sonst stoppt iOS PiP.
     private(set) weak var hostView: UIView?
 
     private weak var mediaPlayer: VLCMediaPlayer?
@@ -59,41 +87,29 @@ class VLCPiPCoordinator: NSObject {
     var onPiPAvailabilityChanged: ((_ possible: Bool) -> Void)?
 
     override init() {
-        self.displayLayer = AVSampleBufferDisplayLayer()
-        self.displayLayer.videoGravity = .resizeAspect
-        // Schwarz als Hintergrund bevor der erste Frame reinkommt.
-        self.displayLayer.backgroundColor = UIColor.black.cgColor
+        self.displayView = VLCDisplayLayerView(frame: .zero)
+        self.displayView.backgroundColor = .black
         super.init()
+        self.displayLayer.videoGravity = .resizeAspect
     }
 
     /// Verbindet den Koordinator mit einem laufenden VLCMediaPlayer
-    /// und hängt die Layer in die übergeordnete View ein.
+    /// und hängt die displayView in die übergeordnete View ein.
     /// Erst NACH attach() ist startPiP() sinnvoll.
     func attach(to mediaPlayer: VLCMediaPlayer, hostView: UIView) {
         self.mediaPlayer = mediaPlayer
         self.hostView = hostView
 
-        // Layer-Frame initial setzen.
-        let initialSize: CGSize
-        if hostView.bounds.width > 1 && hostView.bounds.height > 1 {
-            initialSize = hostView.bounds.size
-        } else {
-            initialSize = CGSize(width: 1280, height: 720)
-        }
-        displayLayer.frame = CGRect(origin: .zero, size: initialSize)
-        hostView.layer.insertSublayer(displayLayer, at: 0)
-        NSLog("[VLCPiP] attach: layer size=\(initialSize) "
-            + "(hostView.bounds=\(hostView.bounds))")
-
-        // Layout-Sync (rotation, resize) — async damit erste Layout-Pass
-        // durch ist.
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, let host = self.hostView else { return }
-            if host.bounds.width > 1 && host.bounds.height > 1 {
-                self.displayLayer.frame = host.bounds
-                NSLog("[VLCPiP] attach (async): layer resized to \(host.bounds.size)")
-            }
-        }
+        // displayView als Subview einhängen mit voller Größe und
+        // Auto-Resize. Anders als bei einer raw CALayer wird die
+        // SampleBufferDisplayLayer dadurch automatisch mitresized
+        // wenn hostView seine Bounds ändert (Rotation, Player-Container-
+        // Resize, etc.). Insert-Index 0 = ganz hinten in der z-Order,
+        // damit Flutter-Overlays (Controls etc.) drüberliegen.
+        displayView.frame = hostView.bounds
+        displayView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        hostView.insertSubview(displayView, at: 0)
+        NSLog("[VLCPiP] attach: hostView.bounds=\(hostView.bounds), displayView attached")
 
         // AVAudioSession für Background-Audio.
         do {
@@ -144,14 +160,30 @@ class VLCPiPCoordinator: NSObject {
     func detach() {
         possibilityObservation?.invalidate()
         possibilityObservation = nil
-        // Pump VOR Layer-Removal — sonst feuert libvlc Callbacks
-        // gegen einen toten displayLayer.
+        // Pump VOR View-Removal — sonst feuert libvlc Callbacks
+        // gegen eine displayLayer die schon aus der Hierarchie ist.
+        // libvlc_video_set_callbacks(NULL) wartet intern bis alle
+        // in-flight Callbacks fertig sind, danach ist es safe weiter
+        // aufzuräumen.
         pump?.detach()
         pump = nil
-        displayLayer.removeFromSuperlayer()
+        displayView.removeFromSuperview()
         pipController = nil
         mediaPlayer = nil
         hostView = nil
+        NSLog("[VLCPiP] detached")
+    }
+
+    deinit {
+        // Sicherheitsnetz für den Fall dass detach() nicht explizit
+        // aufgerufen wurde (zb wenn Flutter die PlatformView teardown
+        // ohne dispose-MethodCall durchläuft). Wenn wir ohne pump-
+        // detach deallociert würden, würden libvlc-Callbacks gegen
+        // einen toten ObjC-Pointer feuern → use-after-free Crash.
+        if pump != nil {
+            NSLog("[VLCPiP] deinit ohne vorheriges detach — räume nach")
+            pump?.detach()
+        }
     }
 
     // MARK: - PiP control (vom Plugin via MethodChannel aufgerufen)
