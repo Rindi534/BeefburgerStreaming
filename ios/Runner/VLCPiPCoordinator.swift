@@ -285,6 +285,37 @@ class VLCPiPCoordinator: NSObject {
         NSLog("[VLCPiP] mediaWillChange: swap-window=15s, layer flushed, capture boosted to \(captureFPSBoost)Hz")
     }
 
+    /// Crossfade-Pfad: das Plugin hat parallel zum laufenden Player
+    /// einen zweiten hochgefahren und ist jetzt soweit, dass wir den
+    /// Snapshot-Pump auf die neue Quelle umschalten können. Der
+    /// Pump läuft weiter (CADisplayLink wird NICHT neu gestartet),
+    /// nur die `mediaPlayer`-Ref wandert. Wichtig: `flushAndRemoveImage()`
+    /// passiert hier NICHT — wir lassen das letzte Frame der alten
+    /// Folge stehen bis der erste Frame der neuen vom neuen Player
+    /// reinrutscht. Das vermeidet den 1–2 sichtbaren Schwarz-Frames-
+    /// Glitch im PiP-Window.
+    func replaceMediaPlayer(_ newPlayer: VLCMediaPlayer) {
+        self.mediaPlayer = newPlayer
+        // hasVideoOut-Gate kurz relaxen falls der neue Player noch
+        // im Anlauf ist — sonst dropt captureOneFrame die ersten
+        // potenziellen Snapshots ab.
+        mediaSwapDeadline = Date().timeIntervalSince1970 + 5.0
+        // lastSyncedRate zurücksetzen, damit syncTimebaseToPlayer den
+        // Play-State des neuen Players sofort nachzieht (sonst hängt
+        // die Timebase vom alten weiter und PiP-UI zeigt den falschen
+        // Status).
+        lastSyncedRate = -1
+        NSLog("[VLCPiP] mediaPlayer replaced (crossfade); 5s gate-relax window")
+    }
+
+    /// Public-Wrapper über `boostCaptureForSwap`. Gibt dem Crossfade-
+    /// Pfad in VLCPlayerPlugin.swift die Möglichkeit den Snapshot-
+    /// Boost zu triggern, ohne dass mediaWillChange() (das ZUSÄTZLICH
+    /// die Layer flusht) aufgerufen werden muss.
+    func mediaSwapBoost(seconds: TimeInterval) {
+        boostCaptureForSwap(seconds: seconds)
+    }
+
     func detach() {
         stopCapture()
         possibilityObservation?.invalidate()

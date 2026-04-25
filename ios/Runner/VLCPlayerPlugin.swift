@@ -62,9 +62,45 @@ class VLCPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
 
 class VLCPlayerView: NSObject, FlutterPlatformView {
     private let container: UIView
-    private let videoView: UIView
-    private let mediaPlayer: VLCMediaPlayer
+    /// Drawable für den AKTUELL spielenden VLCMediaPlayer. War früher
+    /// `let`, ist jetzt `var` weil der Auto-Next-Crossfade-Pfad
+    /// (siehe `crossfadeToNextMedia`) zur Laufzeit auf eine
+    /// frisch-initialisierte Drawable-View umschaltet.
+    private var videoView: UIView
+    /// Aktueller VLCMediaPlayer. Wird im Crossfade-Pfad gegen einen
+    /// neuen, parallel hochgefahrenen Player getauscht. Muss daher
+    /// `var` sein.
+    private var mediaPlayer: VLCMediaPlayer
     private let viewId: Int64
+
+    // ─── Crossfade-State (Fix C, Auto-Next-Blackscreen-Workaround) ─────
+    //
+    // Wenn Auto-Next-Episode während aktivem PiP feuert, kann libvlc's
+    // vout-Modul beim stop+restart-Zyklus im Background nicht
+    // zuverlässig neu initialisiert werden — Audio läuft, Video bleibt
+    // schwarz. Fix B (vout-Reuse via setMedia) hat das nicht gelöst,
+    // weil der Setter intern weiterhin libvlc_media_player_stop()
+    // aufruft.
+    //
+    // Fix C: Wir spinnen für die nächste Folge einen ZWEITEN
+    // VLCMediaPlayer mit eigenem Drawable parallel hoch (audio muted),
+    // warten bis er einen Video-Output hat, und übernehmen ihn dann
+    // atomisch — der vout der neuen Folge wird hochgefahren WÄHREND
+    // der alte noch lebt und PiP die App im "audio+rendering"-Background
+    // hält. Damit umgehen wir den vout-Teardown-Race komplett.
+    private var nextMediaPlayer: VLCMediaPlayer?
+    private var nextVideoView: UIView?
+    /// Polling-Timer der wartet bis nextMediaPlayer.hasVideoOut=true
+    /// (oder Timeout abläuft) und dann den Swap auslöst.
+    private var swapWatchdog: Timer?
+    /// Maximale Zeit die wir auf hasVideoOut der neuen Folge warten,
+    /// bevor wir trotzdem swappen. 8s deckt langsame iPhones bei
+    /// schweren 4K-HEVC-Files ab.
+    private let crossfadeTimeoutSeconds: TimeInterval = 8.0
+    /// Lautstärke vor dem Swap (0–100). VLCs `audio.volume` ist
+    /// 0–200 (über 100 ist Boost). Wir muten den neuen Player bevor
+    /// er play() macht und entmuten erst beim Handover.
+    private var savedVolumeForSwap: Int32 = 100
 
     private let methodChannel: FlutterMethodChannel
     private let eventChannel: FlutterEventChannel
@@ -333,9 +369,6 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             }
             result(nil)
         case "replaceMedia":
-            // Für den PiP-in-place-Swap analog zum NativePlayer-Pfad.
-            // Session 2 wird hier ggf. nochmal nachjustieren, wenn der
-            // PiP-Controller hängt weil das Drawable kurz leer war.
             guard let args = call.arguments as? [String: Any],
                   let media = args["mediaUrl"] as? String else {
                 result(FlutterError(code: "bad_args",
@@ -345,47 +378,51 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             }
             let sub = args["subtitleUrl"] as? String
             let start = (args["startSeconds"] as? Double) ?? 0
-            // PiP-Koordinator VORHER informieren: flushed den stale
-            // Frame der alten Folge aus der sampleBufferDisplayLayer
-            // und öffnet ein 3s-Recovery-Fenster in dem der
-            // hasVideoOut-Gate relaxiert ist. Ohne diesen Aufruf bleibt
-            // PiP bei Auto-Next-Episode auf der letzten Szene der alten
-            // Folge eingefroren während das neue Audio im Hintergrund
-            // schon läuft (User-Bugreport v1.5.29).
+
+            // PiP-aktiv im Hintergrund? → Crossfade-Pfad. Sonst
+            // (Foreground / kein PiP) den simplen Setter-Pfad weiter
+            // benutzen — der hat in Foreground keinen vout-Race und
+            // ist deutlich weniger Code-Bewegung.
+            var useCrossfade = false
             if #available(iOS 15.0, *),
-               let coord = pipCoordinator as? VLCPiPCoordinator {
-                coord.mediaWillChange()
+               let coord = pipCoordinator as? VLCPiPCoordinator,
+               coord.isPiPActive {
+                useCrossfade = true
             }
-            loadMedia(urlString: media,
-                      subtitleUrl: sub,
-                      startSeconds: start,
-                      keepVoutAlive: true)
-            // Drawable-Kick: nach dem stop/play-Zyklus von loadMedia
-            // den drawable-Handle einmal lösen und wieder dranhängen.
-            // Während PiP aktiv ist (App im Background) verpasst
-            // MobileVLCKit sonst die Video-Output-Reinitialisierung —
-            // Audio läuft, aber saveVideoSnapshotAt bekommt keine neuen
-            // Frames ("Blackscreen bleibt", v1.5.30-Bugreport). Drei
-            // gestaffelte Kicks über die ersten 2s decken unter-
-            // schiedliche Decoder-Startup-Timings ab (manche Files
-            // brauchen länger bis der erste Keyframe dekodiert ist).
-            let kickTimes: [Double] = [0.3, 0.9, 1.8]
-            for t in kickTimes {
-                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                    guard let self = self else { return }
-                    // Nur kicken wenn noch kein Video-Output steht —
-                    // sonst reißen wir einen gerade laufenden Decoder
-                    // unnötig auf.
-                    if !self.mediaPlayer.hasVideoOut {
-                        let d = self.videoView
-                        self.mediaPlayer.drawable = nil
-                        self.mediaPlayer.drawable = d
-                        NSLog("[VLCPlayer] drawable kicked at +\(t)s "
-                            + "(hasVideoOut was false)")
+
+            if useCrossfade {
+                NSLog("[VLCPlayer] replaceMedia: crossfade path (PiP active)")
+                crossfadeToNextMedia(urlString: media,
+                                     subtitleUrl: sub,
+                                     startSeconds: start)
+                result(nil)
+            } else {
+                NSLog("[VLCPlayer] replaceMedia: setter path (PiP idle)")
+                if #available(iOS 15.0, *),
+                   let coord = pipCoordinator as? VLCPiPCoordinator {
+                    coord.mediaWillChange()
+                }
+                loadMedia(urlString: media,
+                          subtitleUrl: sub,
+                          startSeconds: start,
+                          keepVoutAlive: true)
+                // Drawable-Kicks (defensiv, falls PiP knapp danach starten
+                // sollte) — wie vorher.
+                let kickTimes: [Double] = [0.3, 0.9, 1.8]
+                for t in kickTimes {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                        guard let self = self else { return }
+                        if !self.mediaPlayer.hasVideoOut {
+                            let d = self.videoView
+                            self.mediaPlayer.drawable = nil
+                            self.mediaPlayer.drawable = d
+                            NSLog("[VLCPlayer] drawable kicked at +\(t)s "
+                                + "(hasVideoOut was false)")
+                        }
                     }
                 }
+                result(nil)
             }
-            result(nil)
         case "startPiP":
             if #available(iOS 15.0, *),
                let coord = pipCoordinator as? VLCPiPCoordinator {
@@ -433,6 +470,8 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                 result(false)
             }
         case "dispose":
+            // Falls noch ein Crossfade-Kandidat läuft, vorher killen.
+            cancelPendingCrossfade()
             if #available(iOS 15.0, *),
                let coord = pipCoordinator as? VLCPiPCoordinator {
                 coord.detach()
@@ -474,6 +513,205 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         return out
     }
 
+    // MARK: - Crossfade (Auto-Next during active PiP)
+    //
+    // Hintergrund: Wenn der Nutzer PiP gestartet hat und die App im
+    // Hintergrund ist, kann libvlc's vout-Modul nach einem
+    // stop()-Zyklus nicht zuverlässig neu initialisieren — Audio
+    // läuft, Video bleibt schwarz.
+    //
+    // Strategie hier: Wir bauen einen ZWEITEN VLCMediaPlayer mit
+    // eigenem Drawable parallel auf, lassen ihn anlaufen WÄHREND der
+    // alte noch lebt (PiP hält die App im "audio + Layer-Render"-
+    // Background-Modus, das reicht damit auch der zweite Player
+    // seinen vout hochfahren darf), warten bis der Erste-Frame-
+    // Indikator (`hasVideoOut`) auf dem Neuen steht, und übergeben
+    // dann atomisch:
+    //
+    //   - Lautstärke-Übergabe: alter Player muten, neuer auf alte Vol.
+    //   - PiP-Koordinator wird auf den neuen Player umgehängt
+    //     (`replaceMediaPlayer`), damit der Snapshot-Pump die Frames
+    //     aus der neuen Quelle abgreift.
+    //   - delegate-/state-Übergabe: alter Player wird gestoppt, der
+    //     neue ersetzt `self.mediaPlayer`.
+    //   - Alter Player + alte Drawable-View werden disposed.
+    //
+    // Edge cases:
+    //   - Doppelaufruf: ein laufender Crossfade wird abgebrochen
+    //     (alter "Next" verworfen) bevor der neue startet.
+    //   - Watchdog-Timeout (8s): wir swappen trotzdem, damit der
+    //     User nicht ewig bei "letzte Frame friert"+"neue Audio
+    //     läuft" hängenbleibt. Wenn der neue Player kein hasVideoOut
+    //     hat, sieht der User halt schwarz — aber zumindest läuft die
+    //     Tonspur synchron mit dem unsichtbaren Video weiter.
+    private func crossfadeToNextMedia(urlString: String,
+                                      subtitleUrl: String?,
+                                      startSeconds: Double) {
+        guard let url = resolveUrl(urlString) else {
+            eventSink.send(["event": "error",
+                            "message": "Ungültiger Pfad: \(urlString)"])
+            return
+        }
+
+        // Falls schon ein Crossfade läuft (User skippt sehr schnell durch
+        // mehrere Folgen, oder Auto-Next feuert nochmal): den alten
+        // Kandidaten entsorgen, der Watchdog wird beim nächsten Tick
+        // den NEUEN sehen.
+        cancelPendingCrossfade()
+
+        // Volume sichern damit wir beim Handover gleich wieder einstellen.
+        savedVolumeForSwap = mediaPlayer.audio?.volume ?? 100
+
+        // Neue Drawable-View als Geschwister von videoView in Container.
+        // WICHTIG: muss in der View-Hierarchie hängen (= im aktiven
+        // UIWindow), sonst bekommt VLC's vout-Modul kein backend-
+        // surface und initialisiert nie. Wir stecken sie UNTER die
+        // aktuelle videoView (insertSubview at: 0), damit der User
+        // weiterhin die alte Folge im Hauptfenster sieht solange er
+        // nicht im PiP-Modus ist (im PiP-Modus ist's egal, da rendert
+        // PiP die SampleBufferDisplayLayer).
+        let nextView = UIView(frame: container.bounds)
+        nextView.backgroundColor = .black
+        nextView.contentMode = .scaleAspectFit
+        nextView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.insertSubview(nextView, belowSubview: videoView)
+        nextVideoView = nextView
+
+        // Neuer Player + Setup. addPlaybackSlave erst nach `play()`,
+        // sonst landet der Slave im falschen Input-Slot (libvlc hat
+        // erst beim ersten Demuxer-Pass eine "Episode 0").
+        let nextPlayer = VLCMediaPlayer()
+        nextPlayer.drawable = nextView
+        nextPlayer.delegate = self
+        nextMediaPlayer = nextPlayer
+
+        let media = VLCMedia(url: url)
+        media.addOption(":file-caching=300")
+        media.addOption(":no-drop-late-frames")
+        media.addOption(":no-skip-frames")
+        media.addOption(":freetype-rel-fontsize=16")
+        nextPlayer.media = media
+
+        // Audio des neuen Players muten — wir wollen NICHT zwei
+        // Tonspuren übereinander hören während der Crossfade läuft.
+        nextPlayer.audio?.volume = 0
+
+        nextPlayer.play()
+
+        if let sub = subtitleUrl, !sub.isEmpty {
+            let subUrl = URL(fileURLWithPath: sub)
+            nextPlayer.addPlaybackSlave(subUrl, type: .subtitle, enforce: false)
+        }
+
+        // PiP-Koordinator informieren — er flusht die Layer NICHT
+        // (keine `coord.mediaWillChange()` hier!), damit das letzte
+        // Frame der alten Folge stehen bleibt bis der neue Player
+        // tatsächlich Frames liefert. Sieht für den User ruhiger aus
+        // als ein 2s-Blackscreen-Glitch.
+        //
+        // Stattdessen booten wir nur den Capture-Boost.
+        if #available(iOS 15.0, *),
+           let coord = pipCoordinator as? VLCPiPCoordinator {
+            coord.mediaSwapBoost(seconds: 15.0)
+        }
+
+        // Watchdog: alle 200 ms checken ob der neue Player schon
+        // Video-Output hat. Bei Timeout (8s) trotzdem swappen.
+        let startTs = Date().timeIntervalSince1970
+        let pendingSeek = startSeconds
+        swapWatchdog?.invalidate()
+        swapWatchdog = Timer.scheduledTimer(
+            withTimeInterval: 0.2, repeats: true
+        ) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            // Zielplayer noch derselbe wie zum Zeitpunkt des Schedules?
+            // Wenn nicht, abbrechen — ein neuer Crossfade ist gestartet.
+            guard let candidate = self.nextMediaPlayer,
+                  candidate === nextPlayer else {
+                timer.invalidate()
+                return
+            }
+            let elapsed = Date().timeIntervalSince1970 - startTs
+            let ready = candidate.hasVideoOut
+            if ready || elapsed >= self.crossfadeTimeoutSeconds {
+                timer.invalidate()
+                NSLog("[VLCPlayer] crossfade swap (ready=\(ready), elapsed=\(elapsed)s)")
+                self.commitCrossfade(toPlayer: candidate,
+                                     newView: nextView,
+                                     pendingSeek: pendingSeek)
+            }
+        }
+    }
+
+    /// Bricht einen laufenden Crossfade ab. Disposed den
+    /// Halbfertig-Player + dessen View. Idempotent.
+    private func cancelPendingCrossfade() {
+        swapWatchdog?.invalidate()
+        swapWatchdog = nil
+        if let p = nextMediaPlayer {
+            p.delegate = nil
+            p.stop()
+        }
+        nextMediaPlayer = nil
+        nextVideoView?.removeFromSuperview()
+        nextVideoView = nil
+    }
+
+    /// Atomischer Handover: alter Player wird gestoppt, neuer wird
+    /// `self.mediaPlayer`, PiP-Coordinator zeigt auf den neuen.
+    private func commitCrossfade(toPlayer newPlayer: VLCMediaPlayer,
+                                 newView: UIView,
+                                 pendingSeek: Double) {
+        let oldPlayer = mediaPlayer
+        let oldView = videoView
+
+        // 1. PiP-Coordinator umhängen — ab hier liest der Snapshot-
+        //    Pump aus dem neuen Player.
+        if #available(iOS 15.0, *),
+           let coord = pipCoordinator as? VLCPiPCoordinator {
+            coord.replaceMediaPlayer(newPlayer)
+        }
+
+        // 2. Audio-Übergabe: alten muten, neuen auf gespeicherte
+        //    Volume. Reihenfolge ist wichtig damit kein Doppel-Audio
+        //    zu hören ist.
+        oldPlayer.audio?.volume = 0
+        newPlayer.audio?.volume = savedVolumeForSwap
+
+        // 3. self-Refs umschalten. Ab jetzt sind alle play/pause/seek/
+        //    track-Aufrufe gegen den neuen Player.
+        mediaPlayer = newPlayer
+        videoView = newView
+
+        // 4. Optional: Resume-Position. Beim Auto-Next ist das in der
+        //    Regel 0.0, der Pfad ist aber für Konsistenz da.
+        if pendingSeek > 0 {
+            pendingStartSeconds = pendingSeek
+            didApplyStartSeek = false
+        } else {
+            pendingStartSeconds = 0
+            didApplyStartSeek = true
+        }
+
+        // 5. Aufräumen: alter Player + alte View weg. Delegate vorher
+        //    abklemmen, sonst feuert `mediaPlayerStateChanged` mit
+        //    .stopped/.ended für die ALTE Folge nach dem Swap und
+        //    triggert nochmal Auto-Next-Logik auf Dart-Seite.
+        oldPlayer.delegate = nil
+        oldPlayer.stop()
+        oldView.removeFromSuperview()
+
+        // 6. Crossfade-State zurücksetzen.
+        nextMediaPlayer = nil
+        nextVideoView = nil
+        swapWatchdog = nil
+
+        NSLog("[VLCPlayer] crossfade committed; videoView+mediaPlayer swapped")
+    }
+
     private func seek(toSeconds seconds: Double) {
         // VLCMediaPlayer.time ist in Millisekunden, als VLCTime.
         let target = VLCTime(int: Int32(seconds * 1000))
@@ -483,6 +721,8 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     // MARK: - Lifecycle
 
     deinit {
+        swapWatchdog?.invalidate()
+        nextMediaPlayer?.stop()
         mediaPlayer.stop()
     }
 }
@@ -491,6 +731,17 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
 extension VLCPlayerView: VLCMediaPlayerDelegate {
     func mediaPlayerStateChanged(_ aNotification: Notification) {
+        // Crossfade-Guard: während ein Auto-Next-Crossfade hochfährt,
+        // hat AUCH der noch-stille `nextMediaPlayer` `delegate=self`
+        // gesetzt. Dessen State-Notifications würden sonst gegen
+        // `self.mediaPlayer` (= alter Player) ausgewertet — falsche
+        // Duration wird emittiert, doppelte playing-Events, etc.
+        // Sender via Notification-Object identifizieren und alle
+        // Events vom Nicht-Aktiven verwerfen.
+        if let sender = aNotification.object as? VLCMediaPlayer,
+           sender !== mediaPlayer {
+            return
+        }
         // VLC-States: opening, buffering, playing, paused, stopped,
         // ended, error, esAdded.
         switch mediaPlayer.state {
@@ -532,6 +783,11 @@ extension VLCPlayerView: VLCMediaPlayerDelegate {
     }
 
     func mediaPlayerTimeChanged(_ aNotification: Notification) {
+        // Siehe Guard in mediaPlayerStateChanged — gleicher Grund.
+        if let sender = aNotification.object as? VLCMediaPlayer,
+           sender !== mediaPlayer {
+            return
+        }
         let now = Date().timeIntervalSince1970
         // 30 Hz (33ms) — 10 Hz sah am Slider noch stufig aus, trotz
         // Tween-Interpolation auf Dart-Seite. 30 Hz ist dicht genug
