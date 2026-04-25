@@ -82,6 +82,12 @@ class VLCPiPCoordinator: NSObject {
     /// KVO-Token für AVPictureInPictureController.isPictureInPicturePossible.
     private var possibilityObservation: NSKeyValueObservation?
 
+    /// Timer der periodisch player.time → displayLayer.controlTimebase
+    /// synct. Ohne Timebase zeigt iOS-PiP "Live" statt einer
+    /// Progressbar und verweigert Auto-PiP-on-Background. Mit
+    /// Timebase weiß das System wo der Player gerade steht.
+    private var timebaseSyncTimer: Timer?
+
     /// Event-Callbacks Richtung Dart.
     var onPiPStateChanged: ((_ active: Bool) -> Void)?
     var onPiPAvailabilityChanged: ((_ possible: Bool) -> Void)?
@@ -91,6 +97,22 @@ class VLCPiPCoordinator: NSObject {
         self.displayView.backgroundColor = .black
         super.init()
         self.displayLayer.videoGravity = .resizeAspect
+
+        // Timebase einrichten. Ohne sie schaltet iOS-PiP auf "Live"-
+        // Modus (kein Scrubber, kein Skip) und verweigert
+        // canStartPictureInPictureAutomaticallyFromInline. Wir setzen
+        // sie auf den HostTimeClock und syncen periodisch die Time
+        // gegen player.time damit das System weiß wo wir stehen.
+        var tb: CMTimebase?
+        let s = CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &tb)
+        if s == noErr, let timebase = tb {
+            CMTimebaseSetTime(timebase, time: .zero)
+            CMTimebaseSetRate(timebase, rate: 0.0) // erstmal pausiert
+            self.displayLayer.controlTimebase = timebase
+        }
     }
 
     /// Verbindet den Koordinator mit einem laufenden VLCMediaPlayer
@@ -133,6 +155,46 @@ class VLCPiPCoordinator: NSObject {
         // basierend auf den Frames die in den nächsten ~100ms
         // einfließen werden.
         createPiPController()
+
+        // Timebase-Sync starten — 5 Hz reicht (System interpoliert).
+        timebaseSyncTimer?.invalidate()
+        timebaseSyncTimer = Timer.scheduledTimer(
+            withTimeInterval: 0.2, repeats: true
+        ) { [weak self] _ in
+            self?.syncTimebase()
+        }
+    }
+
+    /// Letzte bekannte Media-Length um zu erkennen wann sie bekannt
+    /// wird (Erstaufruf vs. nachher) — dann müssen wir iOS-PiP
+    /// zwingen sein TimeRange-Cache zu invalidieren, sonst zeigt's
+    /// dauerhaft "Live".
+    private var lastKnownLengthMs: Int32 = 0
+
+    /// Aktualisiert displayLayer.controlTimebase auf den aktuellen
+    /// Stand des VLCMediaPlayers. Rate=1 wenn playing, 0 wenn paused.
+    /// Time = aktuelle Wiedergabe-Position. iOS-PiP nutzt das für
+    /// seine Progressbar und Play/Pause-State im Floating-Window.
+    private func syncTimebase() {
+        guard let tb = displayLayer.controlTimebase,
+              let player = mediaPlayer else { return }
+        let isPlaying = player.isPlaying
+        let posMs = player.time.intValue
+        let posSec = max(0, Double(posMs) / 1000.0)
+        let target = CMTime(seconds: posSec, preferredTimescale: 1000)
+        CMTimebaseSetTime(tb, time: target)
+        CMTimebaseSetRate(tb, rate: isPlaying ? 1.0 : 0.0)
+
+        // Wenn die Media-Length JETZT bekannt ist (war's vorher nicht),
+        // PiP-Controller anstoßen seine Range-Abfrage zu wiederholen.
+        // Sonst klebt er auf "Live" weil bei der ersten Abfrage
+        // length=0 war → unsere TimeRange-Antwort war (0, ∞).
+        let currentLength = player.media?.length.intValue ?? 0
+        if currentLength > 0 && currentLength != lastKnownLengthMs {
+            lastKnownLengthMs = currentLength
+            pipController?.invalidatePlaybackState()
+            NSLog("[VLCPiP] media length now \(currentLength)ms — invalidatePlaybackState")
+        }
     }
 
     private func createPiPController() {
@@ -158,6 +220,8 @@ class VLCPiPCoordinator: NSObject {
     }
 
     func detach() {
+        timebaseSyncTimer?.invalidate()
+        timebaseSyncTimer = nil
         possibilityObservation?.invalidate()
         possibilityObservation = nil
         // Pump VOR View-Removal — sonst feuert libvlc Callbacks

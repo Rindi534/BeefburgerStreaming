@@ -377,13 +377,15 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                 result(false)
             }
         case "dispose":
+            // Gleiche Reihenfolge wie deinit (siehe Crash-Doku unten):
+            // delegate=nil zuerst, dann coord.detach, dann stop.
+            mediaPlayer.delegate = nil
             if #available(iOS 15.0, *),
                let coord = pipCoordinator as? VLCPiPCoordinator {
                 coord.detach()
             }
             pipCoordinator = nil
             mediaPlayer.stop()
-            mediaPlayer.delegate = nil
             result(nil)
         default:
             result(FlutterMethodNotImplemented)
@@ -427,18 +429,28 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     // MARK: - Lifecycle
 
     deinit {
-        // Reihenfolge ist wichtig: ZUERST den PiP-Coordinator detach'en
-        // (der hält den Frame-Pump und damit die libvlc-Callback-
-        // Bindings), DANN erst mediaPlayer.stop(). Ohne den detach
-        // davor würden libvlc's Decoder-Thread-Callbacks gegen einen
-        // gerade freigegebenen Pump feuern → use-after-free Crash.
+        // Reihenfolge ist KRITISCH (Crash-Bug v1.6.1):
+        //
+        // 1. delegate = nil ZUERST. mediaPlayer.stop() unten feuert
+        //    ein .stopped-State-Event. Wenn das während dem dealloc-
+        //    Pfad an self (= delegate) zugestellt wird, dispatchen
+        //    wir auf eine halb-deallozierte Instanz → use-after-free.
+        //    Erst delegate=nil setzen, DANN stop() — Notifications
+        //    landen ins Leere statt in unserem dealloc.
+        //
+        // 2. PiP-Coordinator detach'en — räumt den Frame-Pump und
+        //    seine libvlc-Callbacks ab. libvlc_video_set_callbacks(NULL)
+        //    ist synchron, blockt bis alle Decoder-Thread-Callbacks
+        //    fertig sind.
+        //
+        // 3. Erst dann mediaPlayer.stop().
+        mediaPlayer.delegate = nil
         if #available(iOS 15.0, *),
            let coord = pipCoordinator as? VLCPiPCoordinator {
             coord.detach()
         }
         pipCoordinator = nil
         mediaPlayer.stop()
-        mediaPlayer.delegate = nil
     }
 }
 
