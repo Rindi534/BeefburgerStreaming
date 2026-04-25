@@ -410,30 +410,34 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         player.time = VLCTime(int: safe)
 
         if wasPlaying {
-            // Mehrere gestaffelte play()-Versuche — VLC's "time ="
-            // wirft den Player kurz in einen seeking-State; ein
-            // synchroner play() direkt danach wird oft ignoriert.
-            // Die Cascade trifft sicher den Punkt ab dem play()
-            // wieder greift. Zusätzlich Timebase auf rate=1 halten.
+            // Aggressiver Resume-Pfad: play() wird in einer Reihe
+            // gestaffelter Ticks abgesetzt — UNCONDITIONAL, auch wenn
+            // VLC denkt es spielt schon (no-op dann). Plus an JEDEM
+            // Tick: Timebase rate=1 zwangshalten + invalidatePlayback-
+            // State damit iOS-PiP seine Pause-Anzeige nicht latcht.
+            //
+            // Beobachtung: VLC kommt manchmal erst nach 1500-2000ms
+            // aus dem Seeking-State raus, dann muss play() nochmal
+            // greifen. Vorher hatten wir nur Retries bis 800ms — das
+            // war zu kurz für lange Seeks.
             player.play()
-            for delayMs in [100, 250, 500, 800] {
+            for delayMs in [100, 250, 500, 1000, 1500, 2000, 2500] {
                 DispatchQueue.main.asyncAfter(
                     deadline: .now() + .milliseconds(delayMs)
                 ) { [weak self] in
                     guard let self = self,
                           let p = self.mediaPlayer else { return }
-                    if !p.isPlaying {
-                        p.play()
-                    }
+                    p.play()  // unconditional — no-op if already playing
                     if let tb = self.displayLayer.controlTimebase {
                         CMTimebaseSetRate(tb, rate: 1.0)
                     }
+                    self.pipController?.invalidatePlaybackState()
                 }
             }
-            // Flag nach 1.2s zurücksetzen — bis dahin sollte VLC
-            // garantiert wieder im playing-State sein.
+            // Flag nach 3s zurücksetzen — gibt selbst sehr trägen
+            // Seeks Zeit zu fertigwerden.
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + 1.2
+                deadline: .now() + 3.0
             ) { [weak self] in
                 self?.skipInProgress = false
                 self?.pipController?.invalidatePlaybackState()

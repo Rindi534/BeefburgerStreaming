@@ -111,19 +111,17 @@ extern int libvlc_video_get_spu(libvlc_media_player_t *p_mi);
     // Lock-Counter um doppelte attach() abzufangen.
     BOOL _attached;
 
-    // Crash-Schutz: Buffer aus dem VORHERIGEN Frame, hier festgehalten
-    // bis der NÄCHSTE Frame-Cycle vollständig durch ist. Begründung:
-    // libvlc's Decoder-Thread macht `picture_CopyPixels` (= memmove
-    // auf unseren Buffer) als Teil des picture-Lifecycles, und die
-    // Operation kann ÜBER unlock_cb hinausreichen — vorallem wenn
-    // gerade detach() / Player-Stop läuft. Wenn wir zu früh
-    // CFReleasen, schreibt libvlc in eine schon-freigegebene Memory-
-    // Region → SIGSEGV in `_platform_memmove` (Crash-Report v1.6.2).
-    // Lösung: 1-Frame-Lag — wir holden jeden Buffer für die Dauer
-    // eines Frames extra. Erst beim nächsten unlock_cb wird der
-    // Vorgänger released. Bei 24-60fps ist der Lag 16-42ms — zur
-    // libvlc-Pipeline-Latenz vernachlässigbar.
+    // 1-Frame-Lag-Hold: Buffer aus dem vorherigen Frame, gehalten
+    // bis der nächste rein kommt. Verhindert Memcpy-into-released-
+    // memory innerhalb eines normalen Frame-Cycles.
     CVPixelBufferRef _heldBuffer;
+
+    // CFBridgingRetain auf self, übergeben als opaque an libvlc.
+    // Hält uns am Leben so lange libvlc den Pointer in seinen
+    // Callback-Slots stehen hat. Wird erst in dealloc(!) released —
+    // niemals während aktivem Player oder mid-stop, weil das den
+    // Crash auslöst (siehe Doku zu detach unten).
+    void *_opaque;
 }
 @property (nonatomic, weak, readwrite) AVSampleBufferDisplayLayer *displayLayer;
 @property (atomic, readwrite) uint64_t framesEnqueued;
@@ -161,34 +159,42 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
 - (void)dealloc
 {
-    // Sicherheitsnetz für Pfade die detach() nicht explizit gerufen
-    // haben (zb wenn Flutter den PlatformView abreißt). Auch hier:
-    // KEIN sofortiges Release des Pools — libvlc-Worker-Threads
-    // könnten weiterhin in unsere Buffer schreiben (Crash-Report
-    // v1.6.4 zeigte picture_CopyPixels läuft selbst nach
-    // mediaPlayer.stop() weiter). Deferred-Release nach 2s, damit
-    // jegliche libvlc-Aktivität garantiert durch ist.
-    if (_attached) {
-        NSLog(@"[VLCFramePump] WARN: dealloc ohne vorheriges detach — forciere");
-        if (_handle) {
-            libvlc_video_set_callbacks(_handle, NULL, NULL, NULL, NULL);
-            libvlc_video_set_format_callbacks(_handle, NULL, NULL);
-        }
-        _attached = NO;
+    // Wir kommen erst hier hin NACHDEM:
+    //   - VLCPlayerView.deinit lief → coord.detach (= unser detach,
+    //     hat NICHTS gegen libvlc gemacht, nur _attached=NO)
+    //   - mediaPlayer.stop() lief → libvlc Input/Decoder/Vout
+    //     komplett heruntergefahren. Keine in-flight picture_
+    //     CopyPixels mehr.
+    //   - pipCoordinator wurde nil → coord released → wir released.
+    //
+    // Erst JETZT ist es safe `set_callbacks(NULL)` zu rufen, weil
+    // libvlc gar nicht mehr aktiv ist und keine SPU-Flush-Operation
+    // mehr triggern kann.
+    if (_handle) {
+        libvlc_video_set_callbacks(_handle, NULL, NULL, NULL, NULL);
+        libvlc_video_set_format_callbacks(_handle, NULL, NULL);
         _handle = NULL;
     }
-    CVPixelBufferPoolRef poolToRelease = _pool;
-    CVPixelBufferRef heldToRelease = _heldBuffer;
-    _pool = NULL;
-    _heldBuffer = NULL;
-    if (poolToRelease || heldToRelease) {
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-            dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0),
-        ^{
-            if (heldToRelease) CVPixelBufferRelease(heldToRelease);
-            if (poolToRelease) CVPixelBufferPoolRelease(poolToRelease);
-        });
+
+    // CFBridgingRelease: balanciert den CFBridgingRetain aus attach.
+    // Nach diesem Punkt hat libvlc keinen gültigen opaque-Pointer
+    // mehr (haben wir gerade mit set_callbacks(NULL) geclear-t),
+    // also ist es safe den retain wegzunehmen. Falls dealloc ohne
+    // vorheriges detach lief, retten wir zumindest hier den Leak.
+    if (_opaque) {
+        CFBridgingRelease(_opaque);
+        _opaque = NULL;
+    }
+
+    // Pool und Held jetzt direkt freigeben — libvlc ist garantiert
+    // nicht mehr drauf.
+    if (_heldBuffer) {
+        CVPixelBufferRelease(_heldBuffer);
+        _heldBuffer = NULL;
+    }
+    if (_pool) {
+        CVPixelBufferPoolRelease(_pool);
+        _pool = NULL;
     }
     if (_formatDesc) {
         CFRelease(_formatDesc);
@@ -222,10 +228,14 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     _handle = handle;
     _player = player;
 
+    // CFBridgingRetain: libvlc bekommt einen +1-retain auf self via
+    // opaque. Solange libvlc den Pointer in seinen Callback-Slots
+    // stehen hat (auch nach detach! siehe Doku unten), bleibt self
+    // alive — die statischen C-Callbacks dürfen also nie auf
+    // dangling memory hauen. Balance: CFBridgingRelease in dealloc.
+    _opaque = (void *)CFBridgingRetain(self);
+
     // WICHTIG: Format-Callbacks ZUERST setzen, dann erst die per-frame.
-    // Andersrum kann libvlc kurzzeitig in einem Zustand sein wo es
-    // schon Frames produzieren will aber das Format noch nicht weiß.
-    void *opaque = (__bridge void *)self;
     libvlc_video_set_format_callbacks(handle,
                                        VLCPump_FormatSetupCB,
                                        VLCPump_FormatCleanupCB);
@@ -233,7 +243,7 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
                                VLCPump_LockCB,
                                VLCPump_UnlockCB,
                                VLCPump_DisplayCB,
-                               opaque);
+                               _opaque);
 
     _attached = YES;
     NSLog(@"[VLCFramePump] attached zu %p", handle);
@@ -258,42 +268,34 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 - (void)detach
 {
     if (!_attached) return;
-    if (_handle) {
-        // Callbacks unset'en — libvlc synchronisiert intern dass
-        // KEIN neuer Callback nach diesem Aufruf feuert. ABER:
-        // bereits-laufende `picture_CopyPixels`-Calls in libvlcs
-        // internen Worker-Threads werden NICHT abgebrochen. Sogar
-        // mediaPlayer.stop() joined nicht zwingend alle dieser
-        // Worker (Crash-Report v1.6.4 zeigt picture_CopyPixels
-        // weiterhin laufend NACH stop+detach). Deshalb DEFERED-
-        // RELEASE: Pool und gehaltener Buffer kommen erst nach
-        // 2s weg, garantiert nach jeglicher libvlc-Aktivität.
-        libvlc_video_set_callbacks(_handle, NULL, NULL, NULL, NULL);
-        libvlc_video_set_format_callbacks(_handle, NULL, NULL);
-    }
-    _handle = NULL;
-    _player = nil;
+    // KEIN libvlc_video_set_callbacks(NULL) hier!
+    //
+    // Begründung — Crash-Analysis v1.6.5 (.ips Stack zeigt
+    // gleichzeitig laufende `input_DecoderDelete`, `vout_control_
+    // WaitEmpty`, `_pthread_join` UND `picture_CopyPixels` mit
+    // dest=NULL): wenn man set_callbacks(NULL) aufruft während
+    // mediaPlayer.stop() schon läuft (oder unmittelbar bevor),
+    // tauscht libvlc das Vout-Modul mid-flight aus und flusht
+    // dabei eine pending SPU-Render-Operation in einen frisch-
+    // allokierten Picture-Slot dessen plane[0]=NULL ist
+    // (Allokation noch nicht fertig). → memcpy(NULL, src, 5792)
+    // → SIGSEGV.
+    //
+    // Sicherer Pfad: Callbacks BLEIBEN registriert. Pool und
+    // gehaltener Buffer bleiben in den ivars. mediaPlayer.stop()
+    // (vom Caller direkt nach detach) räumt libvlc ordnungsgemäß
+    // ab — zu dem Zeitpunkt ruft libvlc unsere lock/unlock auch
+    // gar nicht mehr. Erst in dealloc (das passiert erst NACH
+    // dem Stop) machen wir den finalen set_callbacks(NULL) und
+    // Pool-Release.
+    //
+    // _attached=NO blockiert nur weitere enqueues in unseren
+    // unlock_cb (siehe dortigen Check) damit wir keine Frames
+    // mehr in eine möglicherweise schon entfernte DisplayLayer
+    // schieben.
     _attached = NO;
-
-    // Pool und _heldBuffer aus den ivars NEHMEN und in einen Block
-    // capturen — der Block hält die Refs am Leben auch wenn der
-    // Pump-Selbst zwischenzeitlich deallociert. Nach 2s Background-
-    // Queue feuert der Block, releaset, fertig.
-    CVPixelBufferPoolRef poolToRelease = _pool;
-    CVPixelBufferRef heldToRelease = _heldBuffer;
-    _pool = NULL;
-    _heldBuffer = NULL;
-    if (poolToRelease || heldToRelease) {
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-            dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0),
-        ^{
-            if (heldToRelease) CVPixelBufferRelease(heldToRelease);
-            if (poolToRelease) CVPixelBufferPoolRelease(poolToRelease);
-            NSLog(@"[VLCFramePump] deferred release of pool/held done");
-        });
-    }
-    NSLog(@"[VLCFramePump] detached (pool/buffers deferred-release in 2s)");
+    _player = nil;
+    NSLog(@"[VLCFramePump] detached (callbacks bleiben aktiv bis dealloc — Anti-SPU-Flush-Crash)");
 }
 
 // ─── Internal — vom format_setup Callback aufgerufen ────────────────
@@ -368,6 +370,10 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 - (void)_enqueueBufferFromPicture:(CVPixelBufferRef)pixelBuffer
 {
     if (!pixelBuffer || !_formatDesc) return;
+    // Nach detach() KEIN enqueue mehr — die Layer wird gerade aus
+    // der View-Hierarchie genommen. Frames die jetzt noch
+    // einlaufen lassen wir einfach fallen.
+    if (!_attached) return;
     AVSampleBufferDisplayLayer *layer = self.displayLayer;
     if (!layer) return;
 
