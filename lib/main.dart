@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -8,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'models/media_metadata.dart';
 import 'models/watch_progress.dart';
+import 'services/log_service.dart';
 import 'app.dart';
 
 /// Opens a Hive box, and if the box file is corrupted (e.g. after a crash or
@@ -46,18 +50,91 @@ Future<bool> _acquireSingleInstanceLock() async {
 
 // Kept alive intentionally — the OS releases the file handle on exit,
 // which is what signals "this instance is gone" to the next launch.
-// ignore: unused_field
+// ignore: unused_element
 RandomAccessFile? _lockHandle;
 
+/// iOS/Windows: moves any existing Hive files from the app's Documents
+/// directory to the Support directory [dest]. No-op if no files need
+/// moving (fresh install or already migrated). Best-effort per-file —
+/// any failure falls through to the corruption-recovery path in
+/// `_openBoxSafely`.
+Future<void> _migrateHiveFromDocumentsIfNeeded(String dest) async {
+  try {
+    final docs = await getApplicationDocumentsDirectory();
+    if (p.equals(docs.path, dest)) return;
+    const boxes = ['settings', 'watch_progress', 'media_history'];
+    for (final name in boxes) {
+      for (final ext in ['hive', 'lock']) {
+        final src = File(p.join(docs.path, '$name.$ext'));
+        final target = File(p.join(dest, '$name.$ext'));
+        if (await src.exists() && !await target.exists()) {
+          try {
+            await src.rename(target.path);
+          } catch (_) {
+            try {
+              await src.copy(target.path);
+              await src.delete();
+            } catch (_) {/* give up silently */}
+          }
+        }
+      }
+    }
+  } catch (_) {/* non-fatal */}
+}
+
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
+  // runZonedGuarded fängt jede uncaught Exception aus dem App-Zone-
+  // Tree ab — async-Errors die weder per try/catch noch per
+  // FlutterError.onError landen. Wenn die App beim User unerwartet
+  // beendet, finden wir hier den Stacktrace im app.log statt nur ein
+  // schwarzes Fenster zu sehen das sich schließt.
+  await runZonedGuarded<Future<void>>(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    MediaKit.ensureInitialized();
 
   // Initialize window manager for desktop platforms
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     await windowManager.ensureInitialized();
     await windowManager.setMinimumSize(const Size(800, 500));
   }
+
+  // Logger einmalig initialisieren — Datei liegt in
+  // %APPDATA%\Roaming\<company>\<product>\logs\app.log (Windows) bzw.
+  // im Application-Support-Ordner auf iOS. Rotation bei 1 MiB,
+  // maximal 2 MiB Footprint. Wird VOR dem Single-Instance-Check und
+  // VOR Hive aufgesetzt damit auch Init-Fehler aus diesen Pfaden
+  // mitgeschnitten werden.
+  await LogService.init();
+  LogService.info('app starting');
+
+  // FlutterError.onError → synchrone Framework-Errors (build/layout/
+  // paint). Default-Handler macht presentError → Konsole, was beim
+  // doppelt-geklickten .exe niemand sieht. Wir hängen unseren Logger
+  // davor und rufen den Default danach trotzdem auf, damit das
+  // Debug-Verhalten in `flutter run` unverändert bleibt.
+  final defaultFlutterErrorHandler = FlutterError.onError;
+  FlutterError.onError = (FlutterErrorDetails details) {
+    LogService.error(
+      'FlutterError: ${details.exceptionAsString()}',
+      error: details.exception,
+      stack: details.stack,
+    );
+    defaultFlutterErrorHandler?.call(details);
+  };
+
+  // PlatformDispatcher.onError → uncaught async errors die aus
+  // Flutter's Zone rausgepurzelt sind (Plugin-Callbacks, Isolate-
+  // Exceptions). true zurückgeben heißt "geschluckt, App weiterleben
+  // lassen" — wir wollen NICHT dass ein einzelner Plugin-Fehler die
+  // ganze App killt.
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    LogService.crash(
+      'uncaught async error',
+      error: error,
+      stack: stack,
+    );
+    return true;
+  };
 
   // Single-instance guard: if another BeefburgerStreaming is already running,
   // bring it to the front (best-effort) and exit quietly. Two instances would
@@ -121,9 +198,21 @@ void main() async {
   await _openBoxSafely<WatchProgress>('watch_progress');
   await _openBoxSafely<MediaMetadata>('media_history');
 
-  runApp(
-    const ProviderScope(
-      child: HomeStreamingApp(),
-    ),
-  );
+    runApp(
+      const ProviderScope(
+        child: HomeStreamingApp(),
+      ),
+    );
+  }, (Object error, StackTrace stack) {
+    // Letzter Fang — runZonedGuarded landed hier wenn weder
+    // FlutterError noch PlatformDispatcher.onError den Fehler
+    // konsumiert haben. Schreibt in den Logger und versucht NICHT
+    // weiter zu rethrowen, sonst würde Dart's Default-Behavior den
+    // Prozess beenden.
+    LogService.crash(
+      'top-level zone error',
+      error: error,
+      stack: stack,
+    );
+  });
 }
