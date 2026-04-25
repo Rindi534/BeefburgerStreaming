@@ -146,6 +146,26 @@ void main() async {
     final supportDir = await getApplicationSupportDirectory();
     await _migrateHiveFromDocumentsIfNeeded(supportDir.path);
     Hive.init(supportDir.path);
+  } else if (Platform.isWindows) {
+    // Windows: dieselbe Logik wie iOS. `Hive.initFlutter()` ruft
+    // intern `getApplicationDocumentsDirectory()` auf — auf Windows
+    // ist das `C:\Users\<user>\Documents`, also der ganz normale
+    // sichtbare Dokumente-Ordner. Da landeten dann
+    // `settings.hive`, `watch_progress.hive`, `media_history.hive`
+    // (+ .lock-Sidecars) direkt zwischen den User-Files. Schlecht
+    // aufgehoben.
+    //
+    // Korrekt: `getApplicationSupportDirectory()` →
+    // `C:\Users\<user>\AppData\Roaming\<company>\<product>\` —
+    // unsichtbar im normalen Dateimanager-Workflow, aber persistent
+    // und vom OS für genau diesen Zweck (App-State) vorgesehen.
+    //
+    // Migration: existierende .hive/.lock-Files aus Documents werden
+    // einmal nach Support verschoben, damit Watch-Progress &
+    // Settings beim Update nicht verloren gehen.
+    final supportDir = await getApplicationSupportDirectory();
+    await _migrateHiveFromDocumentsIfNeeded(supportDir.path);
+    Hive.init(supportDir.path);
   } else {
     await Hive.initFlutter();
   }
