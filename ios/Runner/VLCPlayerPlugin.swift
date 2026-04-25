@@ -62,7 +62,6 @@ class VLCPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
 
 class VLCPlayerView: NSObject, FlutterPlatformView {
     private let container: UIView
-    private let videoView: UIView
     private let mediaPlayer: VLCMediaPlayer
     private let viewId: Int64
 
@@ -97,10 +96,6 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.container = UIView(frame: frame)
         self.container.backgroundColor = .black
 
-        self.videoView = UIView(frame: frame)
-        self.videoView.backgroundColor = .black
-        self.videoView.contentMode = .scaleAspectFit
-
         self.mediaPlayer = VLCMediaPlayer()
 
         let channelSuffix = "\(viewId)"
@@ -131,47 +126,25 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             // wieder da, aber Playback funktioniert.
         }
 
-        self.mediaPlayer.drawable = self.videoView
+        // mediaPlayer.drawable wird BEWUSST nicht gesetzt:
+        // Mit libvlc_video_set_callbacks (durch VLCFramePump unten)
+        // umgehen wir libvlcs eigenen vout-Pfad komplett. Frames
+        // landen direkt in der AVSampleBufferDisplayLayer aus dem
+        // PiP-Coordinator. Das ist sowohl Foreground-Renderer (in
+        // self.container) als auch PiP-Source — eine Quelle, kein
+        // Dual-Pipeline-Drift mehr.
         self.mediaPlayer.delegate = self
-
-        // ─── PiP-Pipeline-Probe (Schritt 1 von "echtes PiP für VLC") ───
-        // Prüft ob wir an libvlcs C-Handle UND an die libvlc-C-API
-        // ranlinken können. Storrt das Playback NICHT — setzt nur
-        // einen Read-Only-Call ab. Ergebnis fliegt als "probeResult"
-        // -Event zur Dart-Seite, die's dann als Snackbar anzeigt.
-        var probeMsg: NSString? = nil
-        let probeOk = VLCProbeLibvlcHandle(self.mediaPlayer,
-                                            &probeMsg)
-        let probeText = (probeMsg as String?) ?? "no diagnostic"
-        NSLog("[VLCPlayer] probeLibvlcHandle ok=\(probeOk): \(probeText)")
-        // Senden wir nach kurzer Verzögerung — der EventSink kann erst
-        // empfangen sobald Dart den EventChannel attached hat. 200 ms
-        // sind reichlich Puffer.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.eventSink.send([
-                "event": "probeResult",
-                "ok": probeOk,
-                "message": probeText,
-            ])
-        }
 
         self.eventChannel.setStreamHandler(self.eventSink)
         self.methodChannel.setMethodCallHandler { [weak self] call, result in
             self?.handleMethodCall(call, result: result)
         }
 
-        self.container.addSubview(self.videoView)
-        self.videoView.frame = self.container.bounds
-        self.videoView.autoresizingMask =
-            [.flexibleWidth, .flexibleHeight]
-
-        // v1.5.18+48: PiP-Coordinator wieder an, nachdem der
-        // NSException-Crash aus v1.5.15/16 über den Obj-C-Wrapper
-        // VLCSafeSaveSnapshot + den hasVideoOut-Gate in
-        // VLCPiPCoordinator.captureOneFrame entschärft wurde.
-        // Siehe Crash-Report Runner 865BAEB7 (v1.5.16).
-        let enablePiP = true
-        if enablePiP, #available(iOS 15.0, *) {
+        // PiP-Coordinator: hängt VLCFramePump (libvlc-Frame-Callbacks)
+        // an den Player und mounted die AVSampleBufferDisplayLayer
+        // in self.container. Foreground-Render UND PiP-Source sind
+        // ab hier identisch.
+        if #available(iOS 15.0, *) {
             let coord = VLCPiPCoordinator()
             coord.attach(to: self.mediaPlayer, hostView: self.container)
             coord.onPiPStateChanged = { [weak self] active in
@@ -220,34 +193,19 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
     private func loadMedia(urlString: String,
                            subtitleUrl: String?,
-                           startSeconds: Double,
-                           keepVoutAlive: Bool = false) {
+                           startSeconds: Double) {
         guard let url = resolveUrl(urlString) else {
             eventSink.send(["event": "error",
                             "message": "Ungültiger Pfad: \(urlString)"])
             return
         }
 
-        // VLCMediaPlayer's setter `media =` ruft intern bereits
-        // libvlc_media_player_stop() auf bevor es die neue Media setzt.
-        // Der explizite stop() hier davor war redundant UND kontra-
-        // produktiv im PiP-Background-Pfad: er hat einen ZWEITEN
-        // Teardown-Zyklus angestoßen, der mit dem play()-Restart
-        // ganz unten gerace't ist. In Foreground egal, in Background
-        // (PiP aktiv, App suspended bis auf Audio) hat das libvlc's
-        // vout-Modul beim Hochfahren der neuen Folge tot gemacht
-        // → Audio läuft, Video bleibt schwarz. (User-Bugreport v1.5.32.)
-        //
-        // `keepVoutAlive` markiert den Auto-Next-Pfad explizit; in
-        // dem Fall verzichten wir auf den expliziten stop und vertrauen
-        // dem Setter. Beim regulären Erst-Load (keepVoutAlive=false,
-        // mediaPlayer hat noch keine Media) ist stop() ein No-op
-        // sowieso — wir lassen ihn aber drin damit das Verhalten
-        // identisch bleibt zu vorher und wir keinen Regression-
-        // Vektor in den foreground-Erstaufruf einbauen.
-        if !keepVoutAlive {
-            mediaPlayer.stop()
-        }
+        // VLCMediaPlayer's setter `media =` ruft intern stop() auf —
+        // explizit stop davor ist nicht nötig. Mit der neuen Pump-
+        // Pipeline (libvlc_video_set_callbacks) bleibt unsere
+        // CVPixelBuffer-Senke auch über den Stop-Restart-Zyklus
+        // erhalten; libvlc fragt einfach beim nächsten format_setup
+        // einen neuen Pool an.
 
         let media = VLCMedia(url: url)
 
@@ -354,9 +312,11 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             }
             result(nil)
         case "replaceMedia":
-            // Für den PiP-in-place-Swap analog zum NativePlayer-Pfad.
-            // Session 2 wird hier ggf. nochmal nachjustieren, wenn der
-            // PiP-Controller hängt weil das Drawable kurz leer war.
+            // Auto-Next-Pfad. Mit der neuen Pump-Pipeline ist das
+            // ein simpler Setter-Aufruf — die libvlc-Callbacks
+            // bleiben gesetzt, bei stop+restart fragt libvlc beim
+            // nächsten format_setup einfach einen neuen CVPixelBuffer-
+            // Pool an. Kein vout-Teardown, kein Drawable-Kick mehr.
             guard let args = call.arguments as? [String: Any],
                   let media = args["mediaUrl"] as? String else {
                 result(FlutterError(code: "bad_args",
@@ -366,46 +326,9 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             }
             let sub = args["subtitleUrl"] as? String
             let start = (args["startSeconds"] as? Double) ?? 0
-            // PiP-Koordinator VORHER informieren: flushed den stale
-            // Frame der alten Folge aus der sampleBufferDisplayLayer
-            // und öffnet ein 3s-Recovery-Fenster in dem der
-            // hasVideoOut-Gate relaxiert ist. Ohne diesen Aufruf bleibt
-            // PiP bei Auto-Next-Episode auf der letzten Szene der alten
-            // Folge eingefroren während das neue Audio im Hintergrund
-            // schon läuft (User-Bugreport v1.5.29).
-            if #available(iOS 15.0, *),
-               let coord = pipCoordinator as? VLCPiPCoordinator {
-                coord.mediaWillChange()
-            }
             loadMedia(urlString: media,
                       subtitleUrl: sub,
-                      startSeconds: start,
-                      keepVoutAlive: true)
-            // Drawable-Kick: nach dem stop/play-Zyklus von loadMedia
-            // den drawable-Handle einmal lösen und wieder dranhängen.
-            // Während PiP aktiv ist (App im Background) verpasst
-            // MobileVLCKit sonst die Video-Output-Reinitialisierung —
-            // Audio läuft, aber saveVideoSnapshotAt bekommt keine neuen
-            // Frames ("Blackscreen bleibt", v1.5.30-Bugreport). Drei
-            // gestaffelte Kicks über die ersten 2s decken unter-
-            // schiedliche Decoder-Startup-Timings ab (manche Files
-            // brauchen länger bis der erste Keyframe dekodiert ist).
-            let kickTimes: [Double] = [0.3, 0.9, 1.8]
-            for t in kickTimes {
-                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                    guard let self = self else { return }
-                    // Nur kicken wenn noch kein Video-Output steht —
-                    // sonst reißen wir einen gerade laufenden Decoder
-                    // unnötig auf.
-                    if !self.mediaPlayer.hasVideoOut {
-                        let d = self.videoView
-                        self.mediaPlayer.drawable = nil
-                        self.mediaPlayer.drawable = d
-                        NSLog("[VLCPlayer] drawable kicked at +\(t)s "
-                            + "(hasVideoOut was false)")
-                    }
-                }
-            }
+                      startSeconds: start)
             result(nil)
         case "startPiP":
             if #available(iOS 15.0, *),
