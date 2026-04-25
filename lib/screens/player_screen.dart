@@ -1600,6 +1600,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       case LogicalKeyboardKey.escape:
         _stopAndGoBack();
         break;
+      // Enter / Numpad-Enter: "Nächste Folge"-Button. Nur aktiv wenn
+      // das Next-Episode-Overlay tatsächlich sichtbar ist — sonst
+      // würde Enter sonstige Eingaben fressen. Verhalten identisch
+      // zum Klick auf den Button: _isCompleted setzen damit der
+      // Auto-Save am Ende den fast-fertig-State nicht doch noch als
+      // "Weiterschauen" einträgt, dann _playNextEpisode().
+      case LogicalKeyboardKey.enter:
+      case LogicalKeyboardKey.numpadEnter:
+        if (isRepeat) break;
+        if (!_showNextEpisode) break;
+        _isCompleted = true;
+        _playNextEpisode();
+        break;
+      // Backspace: "Abspann ansehen" — die Taste die auf einer
+      // ISO-Tastatur direkt über dem Enter sitzt. User-Wunsch v1.5.31:
+      // zwei Shortcuts fürs Overlay; im Credits-Modus gibt's keinen
+      // Abspann-Button mehr (nur "Jetzt abspielen"), daher dort no-op.
+      case LogicalKeyboardKey.backspace:
+        if (isRepeat) break;
+        if (!_showNextEpisode || _watchingCredits) break;
+        setState(() => _watchingCredits = true);
+        break;
       // "C" is the new primary subtitle toggle. "S" kept as an alias so
       // users who learned the old shortcut don't lose muscle memory
       // (costs nothing — no conflict, both map to the same action).

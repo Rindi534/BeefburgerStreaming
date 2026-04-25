@@ -574,13 +574,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const SizedBox(height: 16),
           Text(error, style: Theme.of(context).textTheme.bodyLarge),
           const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed: () =>
-                ref.read(mediaLibraryProvider.notifier).refresh(),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.accent,
-            ),
-            child: const Text('Erneut versuchen'),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              ElevatedButton.icon(
+                onPressed: () =>
+                    ref.read(mediaLibraryProvider.notifier).refresh(),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Erneut versuchen'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.accent,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+              // Always offer a route to Settings from this screen —
+              // when the stored media folder is gone (moved/unmounted
+              // drive), "Erneut versuchen" re-runs the same failing
+              // scan and leaves the user stuck. Picking a new folder
+              // is the only real escape.
+              OutlinedButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const SettingsScreen()),
+                ),
+                icon: const Icon(Icons.settings_rounded),
+                label: const Text('Einstellungen'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: AppTheme.textMuted),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -613,8 +640,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ref.read(mediaLibraryProvider.notifier).refresh(),
                 icon: const Icon(Icons.refresh_rounded),
                 label: const Text('Aktualisieren'),
+                // foregroundColor explizit setzen — sonst nimmt der
+                // Button die Default-Foreground-Color des dunklen
+                // Themes (≈ schwarz auf rot, schaut aus wie ein
+                // leerer Pill ohne Schrift). Symptom v1.5.30: User-
+                // Bugreport zeigte den roten Button text-/iconlos.
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.accent,
+                  foregroundColor: Colors.white,
                 ),
               ),
               const SizedBox(width: 16),
