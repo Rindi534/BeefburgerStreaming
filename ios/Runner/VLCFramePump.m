@@ -138,6 +138,16 @@ extern int libvlc_video_get_spu(libvlc_media_player_t *p_mi);
     // memory innerhalb eines normalen Frame-Cycles.
     CVPixelBufferRef _heldBuffer;
 
+    // Crop-Pool für h264-Macroblock-Padding-Removal. libvlc liefert
+    // encoded dimensions (z.B. 1456x1088 für 1080p), die letzten
+    // 8 Zeilen sind Decoder-Padding. AVSampleBufferDisplayLayer
+    // ignoriert kCVImageBufferCleanAperture und contentsRect → die
+    // einzige verlässliche Lösung ist die display-Pixels in einen
+    // kleineren PixelBuffer zu kopieren und DEN zu enqueuen.
+    CVPixelBufferPoolRef _cropPool;
+    int32_t _cropDisplayW;
+    int32_t _cropDisplayH;
+
     // CFBridgingRetain auf self, übergeben als opaque an libvlc.
     // Hält uns am Leben so lange libvlc den Pointer in seinen
     // Callback-Slots stehen hat. Wird erst in dealloc(!) released —
@@ -217,6 +227,10 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     if (_pool) {
         CVPixelBufferPoolRelease(_pool);
         _pool = NULL;
+    }
+    if (_cropPool) {
+        CVPixelBufferPoolRelease(_cropPool);
+        _cropPool = NULL;
     }
     if (_formatDesc) {
         CFRelease(_formatDesc);
@@ -440,64 +454,28 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
                           kCVImageBufferTransferFunction_ITU_R_709_2,
                           kCVAttachmentMode_ShouldPropagate);
 
-    // CleanAperture: die ECHTE Display-Größe vom VLCMediaPlayer
-    // ablesen und Crop-Hints setzen. Diagnose-Snackbar v1.7.5 hat
-    // bestätigt: libvlc=1456x1088 vs videoSize=1448x1080 (oder
-    // 1920x1088 vs 1920x1080) — h264-Macroblock-Padding bis zum
-    // nächsten 16er-Multiple. Die letzten 8 Zeilen sind decoder-
-    // padding-Müll und produzieren den grünen Streifen.
-    //
-    // Zwei parallele Mechanismen:
-    //   1. CleanAperture-Attachment (offizielle Apple-API) mit
-    //      korrekten OFFSETS — Apples Konvention: Offset zwischen
-    //      aperture-center UND encoded-center. Padding ist rechts+
-    //      unten, also liegt aperture-center oberhalb-links von
-    //      encoded-center → NEGATIVE Offsets. Vorher hatte ich =0
-    //      gesetzt, was bedeutet "aperture ist im encoded zentriert"
-    //      — wäre nur korrekt wenn padding gleichmäßig auf allen
-    //      seiten wäre.
-    //   2. contentsRect auf der DisplayLayer — visueller Crop. Falls
-    //      AVSampleBufferDisplayLayer kCVImageBufferCleanAperture
-    //      ignoriert (bekannte Limitation in manchen iOS-Versionen),
-    //      übernimmt contentsRect das Cropping direkt im Compositing.
+    // h264-Macroblock-Padding-Removal: encoded-Buffer ist zb 1920x1088
+    // aber echte Display-Größe ist 1920x1080 (libvlc paddet bis zum
+    // nächsten 16er-Multiple). AVSampleBufferDisplayLayer respektiert
+    // weder kCVImageBufferCleanAperture noch contentsRect — die
+    // rendert IMMER den kompletten Buffer. Einzige verlässliche
+    // Lösung: die display-Pixels in einen frischen, kleineren Pool-
+    // Buffer kopieren und DEN enqueuen. Padding fällt bei der Kopie
+    // einfach raus.
     VLCMediaPlayer *player = _player;
+    CVPixelBufferRef bufferToEnqueue = pixelBuffer;
+    CVPixelBufferRef croppedBuffer = NULL;
     if (player) {
-        CGSize displaySize = player.videoSize;
-        if (displaySize.width > 0 && displaySize.height > 0 &&
-            (displaySize.width < (CGFloat)_width ||
-             displaySize.height < (CGFloat)_height)) {
-            CGFloat hOffset = (displaySize.width - (CGFloat)_width) / 2.0;
-            CGFloat vOffset = (displaySize.height - (CGFloat)_height) / 2.0;
-            NSDictionary *aperture = @{
-                (id)kCVImageBufferCleanApertureWidthKey:
-                    @(displaySize.width),
-                (id)kCVImageBufferCleanApertureHeightKey:
-                    @(displaySize.height),
-                (id)kCVImageBufferCleanApertureHorizontalOffsetKey: @(hOffset),
-                (id)kCVImageBufferCleanApertureVerticalOffsetKey: @(vOffset),
-            };
-            CVBufferSetAttachment(pixelBuffer,
-                                  kCVImageBufferCleanApertureKey,
-                                  (__bridge CFDictionaryRef)aperture,
-                                  kCVAttachmentMode_ShouldPropagate);
-
-            // Fallback-Crop via Layer-contentsRect. Werte in
-            // normalisierten Koordinaten (0..1). Padding nur an
-            // rechter und unterer Kante → Origin bei (0,0), Width/
-            // Height = displaySize / encodedSize.
-            CGRect contentsRect = CGRectMake(
-                0, 0,
-                displaySize.width / (CGFloat)_width,
-                displaySize.height / (CGFloat)_height);
-            // Auf Main-Queue setzen — contentsRect ist eine UIView/
-            // Layer-Property, sollte nicht aus dem Decoder-Thread
-            // angefasst werden.
-            dispatch_async(dispatch_get_main_queue(), ^{
-                AVSampleBufferDisplayLayer *l = self.displayLayer;
-                if (l && !CGRectEqualToRect(l.contentsRect, contentsRect)) {
-                    l.contentsRect = contentsRect;
-                }
-            });
+        CGSize ds = player.videoSize;
+        int32_t dW = (int32_t)ds.width;
+        int32_t dH = (int32_t)ds.height;
+        if (dW > 0 && dH > 0 && (dW < _width || dH < _height)) {
+            croppedBuffer = [self _croppedBufferFromSource:pixelBuffer
+                                              displayWidth:dW
+                                             displayHeight:dH];
+            if (croppedBuffer) {
+                bufferToEnqueue = croppedBuffer;
+            }
         }
     }
 
@@ -520,10 +498,11 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     // dem CVPixelBuffer selbst, ist garantiert konsistent.
     CMVideoFormatDescriptionRef formatDesc = NULL;
     OSStatus fs = CMVideoFormatDescriptionCreateForImageBuffer(
-        kCFAllocatorDefault, pixelBuffer, &formatDesc);
+        kCFAllocatorDefault, bufferToEnqueue, &formatDesc);
     if (fs != noErr || !formatDesc) {
         NSLog(@"[VLCFramePump] FormatDescCreateForImageBuffer FAILED: %d",
               (int)fs);
+        if (croppedBuffer) CVPixelBufferRelease(croppedBuffer);
         return;
     }
 
@@ -541,13 +520,14 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     CMSampleBufferRef sampleBuffer = NULL;
     OSStatus s = CMSampleBufferCreateReadyWithImageBuffer(
         kCFAllocatorDefault,
-        pixelBuffer,
+        bufferToEnqueue,
         formatDesc,
         &timing,
         &sampleBuffer);
     CFRelease(formatDesc);
     if (s != noErr || !sampleBuffer) {
         NSLog(@"[VLCFramePump] CMSampleBufferCreate FAILED: %d", (int)s);
+        if (croppedBuffer) CVPixelBufferRelease(croppedBuffer);
         return;
     }
 
@@ -564,6 +544,90 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     [layer enqueueSampleBuffer:sampleBuffer];
     self.framesEnqueued = self.framesEnqueued + 1;
     CFRelease(sampleBuffer);
+    if (croppedBuffer) CVPixelBufferRelease(croppedBuffer);
+}
+
+/// Allokiert (oder reused aus _cropPool) einen NV12-CVPixelBuffer
+/// mit den angegebenen Display-Dimensionen und kopiert die ersten
+/// dW Spalten und dH Zeilen aus dem source-Buffer hinein. Padding-
+/// Bereich (Macroblock-Padding) wird einfach nicht mitkopiert →
+/// kein grüner Streifen mehr.
+- (CVPixelBufferRef)_croppedBufferFromSource:(CVPixelBufferRef)source
+                                 displayWidth:(int32_t)dW
+                                displayHeight:(int32_t)dH
+{
+    if (!_cropPool || _cropDisplayW != dW || _cropDisplayH != dH) {
+        if (_cropPool) {
+            CVPixelBufferPoolRelease(_cropPool);
+            _cropPool = NULL;
+        }
+        NSDictionary *attrs = @{
+            (id)kCVPixelBufferPixelFormatTypeKey:
+                @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (id)kCVPixelBufferWidthKey: @(dW),
+            (id)kCVPixelBufferHeightKey: @(dH),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+            (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+        };
+        NSDictionary *poolAttrs = @{
+            (id)kCVPixelBufferPoolMinimumBufferCountKey: @4,
+        };
+        CVReturn r = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            (__bridge CFDictionaryRef)poolAttrs,
+            (__bridge CFDictionaryRef)attrs,
+            &_cropPool);
+        if (r != kCVReturnSuccess || !_cropPool) {
+            NSLog(@"[VLCFramePump] cropPool create FAILED: %d", r);
+            return NULL;
+        }
+        _cropDisplayW = dW;
+        _cropDisplayH = dH;
+    }
+
+    CVPixelBufferRef dst = NULL;
+    CVReturn r = CVPixelBufferPoolCreatePixelBuffer(
+        kCFAllocatorDefault, _cropPool, &dst);
+    if (r != kCVReturnSuccess || !dst) return NULL;
+
+    CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferLockBaseAddress(dst, 0);
+
+    // Y-Plane kopieren — dW Spalten × dH Zeilen.
+    {
+        uint8_t *srcY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 0);
+        uint8_t *dstY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(dst, 0);
+        size_t srcPitch = CVPixelBufferGetBytesPerRowOfPlane(source, 0);
+        size_t dstPitch = CVPixelBufferGetBytesPerRowOfPlane(dst, 0);
+        size_t copyBytes = (size_t)dW < dstPitch ? (size_t)dW : dstPitch;
+        if (copyBytes > srcPitch) copyBytes = srcPitch;
+        for (int32_t row = 0; row < dH; row++) {
+            memcpy(dstY + (size_t)row * dstPitch,
+                   srcY + (size_t)row * srcPitch,
+                   copyBytes);
+        }
+    }
+    // CbCr-Plane (interleaved): dW/2 chroma-pairs × dH/2 Zeilen,
+    // 2 Bytes pro chroma-pair = dW Bytes per row.
+    {
+        uint8_t *srcUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 1);
+        uint8_t *dstUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(dst, 1);
+        size_t srcPitch = CVPixelBufferGetBytesPerRowOfPlane(source, 1);
+        size_t dstPitch = CVPixelBufferGetBytesPerRowOfPlane(dst, 1);
+        size_t copyBytes = (size_t)dW < dstPitch ? (size_t)dW : dstPitch;
+        if (copyBytes > srcPitch) copyBytes = srcPitch;
+        size_t uvRows = (size_t)dH / 2;
+        for (size_t row = 0; row < uvRows; row++) {
+            memcpy(dstUV + row * dstPitch,
+                   srcUV + row * srcPitch,
+                   copyBytes);
+        }
+    }
+
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferUnlockBaseAddress(dst, 0);
+
+    return dst;
 }
 
 @end
