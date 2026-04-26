@@ -153,12 +153,6 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                     "value": active,
                 ])
             }
-            coord.onSkipDiagnostic = { [weak self] trace in
-                self?.eventSink.send([
-                    "event": "skipDiag",
-                    "trace": trace,
-                ])
-            }
             coord.onPiPAvailabilityChanged = { [weak self] possible in
                 self?.eventSink.send([
                     "event": "pipAvailability",

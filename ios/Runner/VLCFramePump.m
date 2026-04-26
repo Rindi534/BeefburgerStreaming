@@ -15,17 +15,29 @@
 //     synchronisiert intern dass nach dem Aufruf KEIN Callback mehr
 //     feuert. Erst danach ist der Pump sicher freizugeben.
 //
-// Pixel-Format-Wahl: BGRA (32-bit). Begründung:
+// Pixel-Format-Wahl: NV12 (kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange).
 //
-//   - libvlcs "RV32"-Chroma → libvlc konvertiert YUV→BGRA intern via
-//     swscale. Kostet CPU, aber wir bekommen einen Buffer den
-//     AVSampleBufferDisplayLayer ohne weitere Konvertierung
-//     darstellen kann.
-//   - Alternative NV12 wäre schneller (kein Konvert, Decoder-Format
-//     direkt durchgereicht), erfordert aber Color-Space-Attachments
-//     auf dem CMSampleBuffer (BT.601 vs 709 vs 2020) und genauere
-//     CMVideoFormatDescription-Konfiguration. Wenn BGRA-Path stabil
-//     läuft, switchen wir später um. Erstmal Korrektheit > Performance.
+//   - libvlc fourCC "NV12": 2-plane Buffer, plane[0] = Y (luma,
+//     full resolution), plane[1] = CbCr interleaved (chroma, half
+//     vertical resolution, 4:2:0 subsampling).
+//   - Vorteil 1: KEINE chroma-Konvertierung von libvlc nötig — der
+//     Decoder spuckt YUV nativ aus, wir reichen es 1:1 an die
+//     AVSampleBufferDisplayLayer durch (die compositet via Metal
+//     auf der GPU). Spart pro Frame mehrere MB Memory-Bandbreite
+//     und CPU-Cycles auf Mobil-Geräten.
+//   - Vorteil 2: Untertitel werden von libvlc IM YUV-Stadium
+//     (vor der unnötigen Konvertierung zu RV32) in den Buffer
+//     eingebrannt. Mit dem alten RV32-Pfad scheinen Subs verloren
+//     zu gehen weil der vmem-Output das spu-Composite-Stage skippt
+//     (User-Bug v1.6.5 — sub req=2 wrap=2 lib-ok=true lib-cur=2,
+//     aber keine Subs sichtbar).
+//   - CMSampleBuffer braucht Color-Attachments (YCbCrMatrix,
+//     ColorPrimaries, TransferFunction) damit AVSampleBufferDisplay-
+//     Layer die YUV→RGB-Konvertierung beim Render mit den richtigen
+//     Koeffizienten macht. Wir nehmen BT.709 als Standard (HD-Default,
+//     deckt 99% der Real-World-Files ab). SD-Content (480p) sollte
+//     theoretisch BT.601 nehmen — minimal sichtbarer Color-Shift,
+//     in der Praxis nicht störend.
 //
 // Alignment / Pitch:
 //
@@ -102,7 +114,10 @@ extern int libvlc_video_get_spu(libvlc_media_player_t *p_mi);
     CVPixelBufferPoolRef _pool;
     int32_t _width;
     int32_t _height;
-    size_t _pitch;
+    // NV12 hat 2 Planes: Y (luma, full-res) und CbCr (chroma,
+    // halbe Höhe, interleaved 2 Byte pro Pixel-Pair).
+    size_t _pitchY;
+    size_t _pitchUV;
 
     // Format-Description (gecached). Erzeugt einmal pro Pool-Init,
     // wiederverwendet für jedes CMSampleBuffer das wir bauen.
@@ -311,18 +326,20 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         _formatDesc = NULL;
     }
 
+    // NV12 = 4:2:0 biplanar, video-range (limited 16-235 für Y,
+    // 16-240 für CbCr). Das ist was libvlc bei den meisten Codecs
+    // (h264, h265) nativ ausspuckt. Full-range gibt's auch
+    // (BiPlanarFullRange) — manche Streams sind so encoded —
+    // aber video-range ist der dominante Default.
     NSDictionary *pixelBufferAttrs = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferPixelFormatTypeKey:
+            @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (id)kCVPixelBufferWidthKey: @(width),
         (id)kCVPixelBufferHeightKey: @(height),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        // Cache-Hinweis für Metal-Compositor von AVSampleBufferDisplayLayer.
         (id)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
     NSDictionary *poolAttrs = @{
-        // Bis zu 8 buffers im Pool — deckt Decode-Vorlauf + ein paar
-        // im Display-Queue. Mehr wäre Memory-Verschwendung; weniger
-        // führt zu blockierendem CVPixelBufferPoolCreatePixelBuffer.
         (id)kCVPixelBufferPoolMinimumBufferCountKey: @8,
     };
 
@@ -336,9 +353,10 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         return NO;
     }
 
-    // Einen Probe-Buffer dequeuen um den tatsächlichen pitch
-    // (bytesPerRow) zu ermitteln, den schreiben wir libvlc als
-    // pitches[0] zurück.
+    // Probe: tatsächliche bytesPerRow aus dem Pool ermitteln (CV
+    // alignt auf 16/64 byte boundaries je nach Hardware) — wir
+    // melden libvlc diese realen pitches zurück, sonst schreibt
+    // libvlc mit der falschen Stride und das Bild ist verzerrt.
     CVPixelBufferRef probe = NULL;
     res = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
                                               _pool, &probe);
@@ -346,13 +364,14 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         NSLog(@"[VLCFramePump] Probe-buffer create FAILED: %d", res);
         return NO;
     }
-    _pitch = CVPixelBufferGetBytesPerRow(probe);
+    _pitchY  = CVPixelBufferGetBytesPerRowOfPlane(probe, 0);
+    _pitchUV = CVPixelBufferGetBytesPerRowOfPlane(probe, 1);
     CVPixelBufferRelease(probe);
 
-    // CMVideoFormatDescription einmalig erzeugen.
+    // CMVideoFormatDescription für NV12.
     OSStatus s = CMVideoFormatDescriptionCreate(
         kCFAllocatorDefault,
-        kCVPixelFormatType_32BGRA,
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
         width, height,
         NULL,
         &_formatDesc);
@@ -363,7 +382,8 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
     _width = width;
     _height = height;
-    NSLog(@"[VLCFramePump] pool ready %dx%d pitch=%zu", width, height, _pitch);
+    NSLog(@"[VLCFramePump] pool ready (NV12) %dx%d pitchY=%zu pitchUV=%zu",
+          width, height, _pitchY, _pitchUV);
     return YES;
 }
 
@@ -376,6 +396,26 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     if (!_attached) return;
     AVSampleBufferDisplayLayer *layer = self.displayLayer;
     if (!layer) return;
+
+    // Color-Attachments für korrekte YUV→RGB-Konvertierung. Ohne
+    // diese rendert die DisplayLayer NV12-Buffer mit Standard-
+    // Annahmen (oft falsch) → grünstichige oder zu dunkle Bilder.
+    // BT.709 ist HD-Standard und passt für 99% der Real-World-
+    // Files (h264/h265 in 720p/1080p). SD-Content (480p) wäre
+    // strikt BT.601 — der Color-Shift ist aber so klein dass
+    // wir das in Kauf nehmen statt per-Frame zu klassifizieren.
+    CVBufferSetAttachment(pixelBuffer,
+                          kCVImageBufferYCbCrMatrixKey,
+                          kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer,
+                          kCVImageBufferColorPrimariesKey,
+                          kCVImageBufferColorPrimaries_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixelBuffer,
+                          kCVImageBufferTransferFunctionKey,
+                          kCVImageBufferTransferFunction_ITU_R_709_2,
+                          kCVAttachmentMode_ShouldPropagate);
 
     // Layer-Status checken. Wenn .failed, flush und neu starten.
     if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
@@ -427,14 +467,10 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
 // ─── Static C Callbacks ─────────────────────────────────────────────
 
-/// libvlc fragt nach dem Pixel-Format. Wir sagen "BGRA, deine
-/// Auflösung, Pitch ist X". libvlc passt seine internal-conversion
-/// entsprechend an.
-///
-/// Die Funktion DARF die width/height verändern (zb auf gerade
-/// Pixelzahl roundup). Dann re-allokiert libvlc seine internen
-/// Buffer auf den neuen Wert. Wir nehmen die Werte wie sie
-/// reinkommen und legen den Pool damit an.
+/// libvlc fragt nach dem Pixel-Format. Wir sagen "NV12, 2 planes,
+/// Pitches X/Y". libvlc setzt seinen internen video-output-filter
+/// dann so dass der Decoder direkt in NV12 ausspuckt — keine swscale-
+/// Konvertierung mehr.
 static unsigned VLCPump_FormatSetupCB(void **opaque,
                                        char *chroma,
                                        unsigned *width,
@@ -445,25 +481,31 @@ static unsigned VLCPump_FormatSetupCB(void **opaque,
     VLCFramePump *pump = (__bridge VLCFramePump *)*opaque;
     if (!pump) return 0;
 
-    // Wir wollen BGRA. Schreibe das in das chroma-Array (libvlc
-    // erwartet eine 4-char fourCC, NULL-terminator nicht nötig
-    // weil das Array selbst nur 4 chars hat).
-    chroma[0] = 'R'; chroma[1] = 'V'; chroma[2] = '3'; chroma[3] = '2';
+    // fourCC "NV12" — biplanar 4:2:0, video-range.
+    chroma[0] = 'N'; chroma[1] = 'V'; chroma[2] = '1'; chroma[3] = '2';
 
-    // Pool bauen mit den verlangten Dimensionen.
     if (![pump _initPoolWithWidth:(int32_t)*width
                             height:(int32_t)*height]) {
         NSLog(@"[VLCFramePump] format_setup: pool init failed");
         return 0;
     }
 
-    // pitch (bytes pro Zeile) und lines (Zeilen-Anzahl) zurückschreiben.
-    pitches[0] = (unsigned)pump->_pitch;
+    // Plane 0 = Y (luma): full-resolution, 1 byte/pixel.
+    //   pitches[0] = bytes per Y-row (= width + alignment-padding)
+    //   lines[0]   = Anzahl Y-rows (= height)
+    // Plane 1 = CbCr (chroma): half-vertical-resolution, 2 bytes
+    // per chroma-sample-pair (interleaved Cb, Cr).
+    //   pitches[1] = bytes per CbCr-row (= width + alignment-padding)
+    //   lines[1]   = Anzahl CbCr-rows (= height/2)
+    pitches[0] = (unsigned)pump->_pitchY;
+    pitches[1] = (unsigned)pump->_pitchUV;
     lines[0] = *height;
+    lines[1] = *height / 2;
 
-    NSLog(@"[VLCFramePump] format_setup chroma=RV32 %ux%u pitch=%u",
-          *width, *height, pitches[0]);
-    return 1; // Anzahl der Buffer die libvlc anfragen darf — 1 plane.
+    NSLog(@"[VLCFramePump] format_setup chroma=NV12 %ux%u "
+          @"pitchY=%u pitchUV=%u",
+          *width, *height, pitches[0], pitches[1]);
+    return 2; // 2 Planes für NV12.
 }
 
 static void VLCPump_FormatCleanupCB(void *opaque)
@@ -480,18 +522,17 @@ static void VLCPump_FormatCleanupCB(void *opaque)
 }
 
 /// VLC will einen Buffer. Wir dequeuen einen frischen aus dem Pool,
-/// locken ihn, schreiben den base-pointer in planes[0], geben den
-/// CVPixelBuffer als "picture" pointer zurück (libvlc reicht den
-/// 1:1 an unlock/display weiter — wir kriegen unsere Referenz
-/// unverändert wieder).
+/// locken ihn, schreiben die Plane-Pointer in planes[0..1] (Y, CbCr),
+/// geben den CVPixelBuffer als "picture" pointer zurück (libvlc reicht
+/// ihn 1:1 an unlock/display weiter).
 static void *VLCPump_LockCB(void *opaque, void **planes)
 {
     VLCFramePump *pump = (__bridge VLCFramePump *)opaque;
     if (!pump || !pump->_pool) {
-        // Pool noch nicht ready — passiert in der Race zwischen
-        // format_setup und der ersten Frame-Anforderung. Geben wir
-        // libvlc NULL → Frame wird gedroppt.
-        if (planes) planes[0] = NULL;
+        if (planes) {
+            planes[0] = NULL;
+            planes[1] = NULL;
+        }
         return NULL;
     }
 
@@ -499,18 +540,19 @@ static void *VLCPump_LockCB(void *opaque, void **planes)
     CVReturn r = CVPixelBufferPoolCreatePixelBuffer(
         kCFAllocatorDefault, pump->_pool, &buffer);
     if (r != kCVReturnSuccess || !buffer) {
-        // Pool empty → kCVReturnWouldExceedAllocationThreshold.
-        // Frame droppen ist akzeptabel; Decoder produziert nächsten.
-        if (planes) planes[0] = NULL;
+        if (planes) {
+            planes[0] = NULL;
+            planes[1] = NULL;
+        }
         return NULL;
     }
 
+    // BEIDE Planes locken (NV12 hat 2 Planes — Y und CbCr).
     CVPixelBufferLockBaseAddress(buffer, 0);
-    if (planes) planes[0] = CVPixelBufferGetBaseAddress(buffer);
-
-    // CFRetain nicht nötig — CVPixelBufferPoolCreatePixelBuffer
-    // gibt einen Buffer mit retainCount=1 zurück, den wir in
-    // unlock_cb wieder releasen.
+    if (planes) {
+        planes[0] = CVPixelBufferGetBaseAddressOfPlane(buffer, 0); // Y
+        planes[1] = CVPixelBufferGetBaseAddressOfPlane(buffer, 1); // CbCr
+    }
     return (void *)buffer;
 }
 
