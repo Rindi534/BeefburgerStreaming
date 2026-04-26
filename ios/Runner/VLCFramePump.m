@@ -395,10 +395,7 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     AVSampleBufferDisplayLayer *layer = self.displayLayer;
     if (!layer) return;
 
-    // Color-Attachments für korrekte YUV→RGB-Konvertierung. Ohne
-    // diese rendert die DisplayLayer NV12-Buffer mit Standard-
-    // Annahmen → grünstichige oder zu dunkle Bilder.
-    // BT.709 = HD-Standard.
+    // Color-Attachments für korrekte YUV→RGB-Konvertierung.
     CVBufferSetAttachment(pixelBuffer,
                           kCVImageBufferYCbCrMatrixKey,
                           kCVImageBufferYCbCrMatrix_ITU_R_709_2,
@@ -411,6 +408,37 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
                           kCVImageBufferTransferFunctionKey,
                           kCVImageBufferTransferFunction_ITU_R_709_2,
                           kCVAttachmentMode_ShouldPropagate);
+
+    // CleanAperture: die ECHTE Display-Größe vom VLCMediaPlayer
+    // ablesen und als Crop-Hint auf den Buffer setzen. Hintergrund:
+    // h264/h265-Encoder padden Frames bis zum nächsten 16er-
+    // Multiple (1080p → 1088, 720p → 720 (passt), etc.) für ihre
+    // Macroblock-Pipeline. libvlc gibt uns die ENCODED dimensions
+    // (= 1088), nicht die DISPLAY dimensions (= 1080). Die letzten
+    // 8 Zeilen sind technisch dekodiert aber nicht zur Anzeige
+    // bestimmt — sie enthalten oft schwarz/grünen Decoder-Müll.
+    // AVSampleBufferDisplayLayer respektiert kCVImageBufferCleanAperture
+    // und croppt entsprechend → grüner Streifen weg.
+    VLCMediaPlayer *player = _player;
+    if (player) {
+        CGSize displaySize = player.videoSize;
+        if (displaySize.width > 0 && displaySize.height > 0 &&
+            (displaySize.width < (CGFloat)_width ||
+             displaySize.height < (CGFloat)_height)) {
+            NSDictionary *aperture = @{
+                (id)kCVImageBufferCleanApertureWidthKey:
+                    @(displaySize.width),
+                (id)kCVImageBufferCleanApertureHeightKey:
+                    @(displaySize.height),
+                (id)kCVImageBufferCleanApertureHorizontalOffsetKey: @0,
+                (id)kCVImageBufferCleanApertureVerticalOffsetKey: @0,
+            };
+            CVBufferSetAttachment(pixelBuffer,
+                                  kCVImageBufferCleanApertureKey,
+                                  (__bridge CFDictionaryRef)aperture,
+                                  kCVAttachmentMode_ShouldPropagate);
+        }
+    }
 
     // Layer-Status checken. Wenn .failed, flush und error logen
     // damit man's beim nächsten Build im NSLog sieht.

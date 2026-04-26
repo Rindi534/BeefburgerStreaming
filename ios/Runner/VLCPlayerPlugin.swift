@@ -242,6 +242,16 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         media.addOption(":no-skip-frames")
         media.addOption(":freetype-rel-fontsize=16")
 
+        // ─── Subtitle compositing forcen ────────────────────────────
+        // Wenn libvlc mit `libvlc_video_set_callbacks` ins Memory-Output
+        // rendert, wird der SPU-Compositor manchmal NICHT in die Vout-
+        // Pipeline eingehängt — Subtitles werden zwar dekodiert (lib-
+        // cur=2 in Diagnose) aber nie ins Frame eingebrannt. Ein
+        // no-op-Filter wie `adjust` (Brightness/Contrast/Saturation
+        // mit Default-Werten = identity) zwingt libvlc die volle
+        // Filter-Chain inkl. spu_blend zu fahren statt einen Fast-Path.
+        media.addOption(":video-filter=adjust")
+
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
 
