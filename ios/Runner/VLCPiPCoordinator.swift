@@ -180,6 +180,15 @@ class VLCPiPCoordinator: NSObject {
     /// wir die Antwort STABIL auf "playing" während der Seek-Phase.
     private var skipInProgress: Bool = false
 
+    /// Defer-Mechanismus für iOS' implizite Pre-Skip-Pause. iOS-PiP
+    /// ruft setPlaying(false) AUTOMATISCH ~10ms vor skipByInterval —
+    /// für AVPlayer egal, für unsere libvlc-Pipeline aber war das die
+    /// Ursache dass der ERSTE Skip nach Wiedergabestart pausiert
+    /// landete (skipInProgress war noch false, also kein Filter).
+    /// Lösung: Pause-Calls 200ms aufschieben. Wenn in der Zeit ein
+    /// skipByInterval kommt, canceln wir den Pause-WorkItem.
+    private var deferredPauseWorkItem: DispatchWorkItem?
+
     /// Aktualisiert displayLayer.controlTimebase auf den aktuellen
     /// Stand des VLCMediaPlayers. Rate=1 wenn playing, 0 wenn paused.
     /// Time = aktuelle Wiedergabe-Position. iOS-PiP nutzt das für
@@ -337,27 +346,42 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
-        // KRITISCH: Während ein Skip läuft, ignorieren wir setPlaying(false).
-        //
-        // Apples PiP-Konvention für SampleBuffer-Delegates ist: iOS
-        // ruft setPlaying(false) AUTOMATISCH beim Skip-Button-Tap auf,
-        // dann skipByInterval, dann setPlaying(true) wenn fertig.
-        // Diese implizite Pause-während-Skip ist für AVPlayer (der
-        // den Seek-Buffer transparent zeigt) sinnvoll — für unsere
-        // libvlc-Pipeline kollidiert sie aber mit dem play()-Cascade
-        // im skipByInterval-Handler. Resultat: schnelles Flackern
-        // zwischen Play/Pause-Symbol bis irgendeine Seite gewinnt.
-        //
-        // Wir filtern den iOS-Pause-Call während skipInProgress raus.
-        if skipInProgress && !playing {
-            NSLog("[VLCPiP] setPlaying(false) während Skip — ignoriert")
+        // play()-Calls IMMER sofort durch — und einen evtl pending
+        // deferred-pause cancel'n. Wenn ein deferred Pause noch
+        // aussteht und play kommt rein, war's offensichtlich keine
+        // implizite Pre-Skip-Pause sondern user-cancelled.
+        if playing {
+            deferredPauseWorkItem?.cancel()
+            deferredPauseWorkItem = nil
+            mediaPlayer?.play()
             return
         }
-        if playing {
-            mediaPlayer?.play()
-        } else {
-            mediaPlayer?.pause()
+
+        // setPlaying(false) — könnte ECHTER User-Pause-Klick sein,
+        // ODER iOS' implizite Pre-Skip-Pause. Wir wissen es noch
+        // nicht. Wenn wir SOFORT pause aufrufen, hat der erste Skip
+        // schon den Player pausiert bevor unser skipInProgress-Flag
+        // greifen kann (siehe v1.6.8 Bugreport: erstes Skip pausiert,
+        // zweites nicht).
+        //
+        // Stattdessen: pause-Operation um 200ms verzögern. Wenn in
+        // der Zeit ein skipByInterval kommt, cancel'n wir den Work-
+        // Item dort. Echte User-Pauses spüren die 200ms Verzögerung
+        // kaum, implizite Pre-Skip-Pauses werden silent gefiltert.
+        if skipInProgress {
+            // Schon mitten im Skip → ignorieren wie bisher.
+            return
         }
+        deferredPauseWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.mediaPlayer?.pause()
+            self?.deferredPauseWorkItem = nil
+        }
+        deferredPauseWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(200),
+            execute: work
+        )
     }
 
     func pictureInPictureControllerTimeRangeForPlayback(
@@ -429,19 +453,34 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
             completionHandler()
             return
         }
-        let wasPlaying = player.isPlaying
+
+        // Wenn iOS gerade eine implizite Pre-Skip-Pause deferred
+        // aufgegeben hat, JETZT canceln. Wir wissen jetzt dass es
+        // KEINE echte User-Pause war, sondern Apples Skip-Konvention.
+        deferredPauseWorkItem?.cancel()
+        deferredPauseWorkItem = nil
+
         let currentMs = player.time.intValue
         let deltaMs = Int32(CMTimeGetSeconds(skipInterval) * 1000)
         let target = currentMs + deltaMs
         let safe = max(0, target)
 
         let baselineFrames = pump?.framesEnqueued ?? 0
-        skipInProgress = wasPlaying
+
+        // skipInProgress UNCONDITIONAL auf true setzen — egal was VLC
+        // gerade als isPlaying meldet. Vorher haben wir's nur gesetzt
+        // wenn wasPlaying=true; aber wenn iOS' implizite Pre-Skip-
+        // Pause schon zugeschlagen hat (was sie hier eigentlich nicht
+        // mehr sollte dank dem deferred-cancel oben, aber Sicherheits-
+        // halber), wäre wasPlaying=false und der Filter inaktiv.
+        skipInProgress = true
 
         player.time = VLCTime(int: safe)
-        if wasPlaying {
-            player.play()
-        }
+        // play() UNCONDITIONAL — selbst wenn der Player gerade
+        // pausiert sein sollte (zb wegen impliziter iOS-Pause die
+        // aber gerade gecancelt wurde, oder weil VLC den Seek
+        // intern als Pause maskiert), zwingen wir resume.
+        player.play()
 
         let startTs = Date().timeIntervalSince1970
         let pollMaxSeconds: TimeInterval = 2.5
