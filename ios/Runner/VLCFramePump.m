@@ -118,6 +118,13 @@ extern int libvlc_video_get_spu(libvlc_media_player_t *p_mi);
     // halbe Höhe, interleaved 2 Byte pro Pixel-Pair).
     size_t _pitchY;
     size_t _pitchUV;
+    // Echte Plane-Heights die der CVPixelBufferPool tatsächlich
+    // alloziert. Können >= nominal height sein wegen Hardware-
+    // Alignment. Wenn wir libvlc nominal height angeben aber der
+    // Pool mehr rows hat, bleibt der Rest uninitialisiert =
+    // grüner Streifen unten am Bild (User-Bug v1.7.1).
+    size_t _linesY;
+    size_t _linesUV;
 
     // Format-Description (gecached). Erzeugt einmal pro Pool-Init,
     // wiederverwendet für jedes CMSampleBuffer das wir bauen.
@@ -364,12 +371,20 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     }
     _pitchY  = CVPixelBufferGetBytesPerRowOfPlane(probe, 0);
     _pitchUV = CVPixelBufferGetBytesPerRowOfPlane(probe, 1);
+    // ECHTE Plane-Heights aus dem Pool. Wenn der Pool intern für
+    // Hardware-Alignment ein paar Extra-Rows alloziert (typisch +8
+    // bis +16 für SIMD-Lanes), schreibt libvlc nur die ersten
+    // *height/h_chroma Zeilen — der Rest bleibt uninitialisiert
+    // und rendert als grüner Streifen unten am Bild.
+    _linesY  = CVPixelBufferGetHeightOfPlane(probe, 0);
+    _linesUV = CVPixelBufferGetHeightOfPlane(probe, 1);
     CVPixelBufferRelease(probe);
 
     _width = width;
     _height = height;
-    NSLog(@"[VLCFramePump] pool ready (NV12) %dx%d pitchY=%zu pitchUV=%zu",
-          width, height, _pitchY, _pitchUV);
+    NSLog(@"[VLCFramePump] pool ready (NV12) %dx%d "
+          @"pitchY=%zu pitchUV=%zu linesY=%zu linesUV=%zu",
+          width, height, _pitchY, _pitchUV, _linesY, _linesUV);
     return YES;
 }
 
@@ -490,16 +505,20 @@ static unsigned VLCPump_FormatSetupCB(void **opaque,
     }
 
     // Plane 0 = Y (luma): full-resolution, 1 byte/pixel.
-    //   pitches[0] = bytes per Y-row (= width + alignment-padding)
-    //   lines[0]   = Anzahl Y-rows (= height)
     // Plane 1 = CbCr (chroma): half-vertical-resolution, 2 bytes
     // per chroma-sample-pair (interleaved Cb, Cr).
-    //   pitches[1] = bytes per CbCr-row (= width + alignment-padding)
-    //   lines[1]   = Anzahl CbCr-rows (= height/2)
+    //
+    // pitches/lines kommen aus dem ECHTEN Probe-Buffer (siehe
+    // _initPoolWithWidth) — nicht aus den nominal width/height die
+    // libvlc reingibt. Der CVPixelBufferPool kann die Plane-Heights
+    // aufgrund von Hardware-Alignment leicht aufrunden; wenn wir
+    // libvlc nominale Werte geben, schreibt's nur diese Anzahl
+    // Zeilen und der Rest ist uninitialisiert = grüner Streifen
+    // unten (User-Bug v1.7.1).
     pitches[0] = (unsigned)pump->_pitchY;
     pitches[1] = (unsigned)pump->_pitchUV;
-    lines[0] = *height;
-    lines[1] = *height / 2;
+    lines[0] = (unsigned)pump->_linesY;
+    lines[1] = (unsigned)pump->_linesUV;
 
     NSLog(@"[VLCFramePump] format_setup chroma=NV12 %ux%u "
           @"pitchY=%u pitchUV=%u",
