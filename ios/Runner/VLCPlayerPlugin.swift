@@ -251,12 +251,22 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // ─── Subtitle compositing forcen ────────────────────────────
         // Wenn libvlc mit `libvlc_video_set_callbacks` ins Memory-Output
         // rendert, wird der SPU-Compositor manchmal NICHT in die Vout-
-        // Pipeline eingehängt — Subtitles werden zwar dekodiert (lib-
-        // cur=2 in Diagnose) aber nie ins Frame eingebrannt. Ein
-        // no-op-Filter wie `adjust` (Brightness/Contrast/Saturation
-        // mit Default-Werten = identity) zwingt libvlc die volle
-        // Filter-Chain inkl. spu_blend zu fahren statt einen Fast-Path.
-        media.addOption(":video-filter=adjust")
+        // Pipeline eingehängt — Subtitles werden dekodiert (lib-cur=2
+        // in Diagnose) aber nie ins Frame eingebrannt.
+        //
+        // Trick: zwei `invert`-Filter hintereinander aktivieren. Visuell
+        // ist das identity (zweimal Farbe-invertieren = original), aber
+        // die bloße Anwesenheit eines video-filters zwingt libvlc die
+        // komplette filter chain zu instantiieren — inkl. spu_blend.
+        // Vorher hatten wir `:video-filter=adjust` versucht (default
+        // = identity), das hat nicht gegriffen weil adjust mit
+        // default-Werten von libvlc als no-op erkannt und gleich
+        // wieder aus der Chain rausgenommen wird.
+        media.addOption(":video-filter=invert:invert")
+        // Positive Bestätigung dass SPU eingeschaltet ist — default
+        // ist es zwar an, aber explizit setzen schadet nicht falls
+        // irgendein anderes module-config das implicit deaktiviert.
+        media.addOption(":spu")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
