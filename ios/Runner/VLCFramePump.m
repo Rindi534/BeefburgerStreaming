@@ -385,6 +385,37 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     NSLog(@"[VLCFramePump] pool ready (NV12) %dx%d "
           @"pitchY=%zu pitchUV=%zu linesY=%zu linesUV=%zu",
           width, height, _pitchY, _pitchUV, _linesY, _linesUV);
+
+    // Diagnose-Snackbar Trigger — Format-Werte gehen an Plugin/Dart
+    // damit ich am iPhone die echten Zahlen sehe statt zu raten.
+    if (self.onFormatDiagnostic) {
+        VLCMediaPlayer *p = _player;
+        CGSize vsz = p ? p.videoSize : CGSizeZero;
+        NSString *info = [NSString stringWithFormat:
+            @"libvlc=%dx%d videoSize=%.0fx%.0f "
+            @"pitchY=%zu pitchUV=%zu linesY=%zu linesUV=%zu",
+            width, height, vsz.width, vsz.height,
+            _pitchY, _pitchUV, _linesY, _linesUV];
+        // videoSize wird oft erst ein paar 100ms später gefüllt,
+        // also Diagnose verzögert nochmal feuern.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(0.8 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            VLCMediaPlayer *p2 = self->_player;
+            CGSize vsz2 = p2 ? p2.videoSize : CGSizeZero;
+            NSString *info2 = [NSString stringWithFormat:
+                @"libvlc=%dx%d videoSize=%.0fx%.0f "
+                @"pitchY=%zu pitchUV=%zu linesY=%zu linesUV=%zu",
+                width, height, vsz2.width, vsz2.height,
+                self->_pitchY, self->_pitchUV,
+                self->_linesY, self->_linesUV];
+            if (self.onFormatDiagnostic) {
+                self.onFormatDiagnostic(info2);
+            }
+        });
+        // Auch die Sofort-Variante schicken, falls videoSize schon da ist
+        self.onFormatDiagnostic(info);
+    }
     return YES;
 }
 

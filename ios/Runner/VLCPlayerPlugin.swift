@@ -159,6 +159,12 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                     "value": possible,
                 ])
             }
+            coord.onFormatDiagnostic = { [weak self] info in
+                self?.eventSink.send([
+                    "event": "formatDiag",
+                    "info": info,
+                ])
+            }
             self.pipCoordinator = coord
         } else {
             // Kein PiP verfügbar → Dart-Seite proaktiv informieren,

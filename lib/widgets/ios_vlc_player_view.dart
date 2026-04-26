@@ -131,6 +131,10 @@ class IOSVLCPlayerController {
           'sub req=$reqId wrap=$wrapper lib-ok=$libOk lib-cur=$libCur',
         );
         break;
+      case 'formatDiag':
+        final info = raw['info'] as String? ?? '';
+        _subDebugCtrl.add('FMT: $info');
+        break;
       case 'skipDiag':
         final trace = raw['trace'] as String? ?? '(empty)';
         _subDebugCtrl.add('SKIP: $trace');

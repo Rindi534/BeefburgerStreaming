@@ -78,6 +78,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Liest aktuelle Sub-Track-ID vom libvlc-Player. -1 = aus, sonst ID.
 - (int)currentSPUTrack;
 
+/// Wird (wenn nicht nil) jedes Mal aufgerufen wenn libvlc das
+/// Pixel-Format ausgehandelt hat. Übergibt eine fertige Diagnose-
+/// String mit allen Format-Parametern für Snackbar-Anzeige.
+@property (nonatomic, copy, nullable) void (^onFormatDiagnostic)(NSString *info);
+
 @end
 
 NS_ASSUME_NONNULL_END

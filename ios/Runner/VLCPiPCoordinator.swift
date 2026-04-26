@@ -144,6 +144,9 @@ class VLCPiPCoordinator: NSObject {
 
         // Frame-Pump anhängen — DAS ist die neue Pipeline.
         let p = VLCFramePump(displayLayer: displayLayer)
+        p.onFormatDiagnostic = { [weak self] info in
+            self?.onFormatDiagnostic?(info)
+        }
         let ok = p.attach(toPlayer: mediaPlayer)
         if !ok {
             NSLog("[VLCPiP] FrameLatch attach FAILED — DisplayLayer wird leer bleiben")
@@ -195,6 +198,10 @@ class VLCPiPCoordinator: NSObject {
     private var skipTrace: [String] = []
     /// Callback Richtung Plugin um Snackbar-Text rauszuschicken.
     var onSkipDiagnostic: ((String) -> Void)?
+
+    /// Callback für Format-Diagnose (wird beim Frame-Format-Setup
+    /// gefeuert). Hilft beim Debug der grünen-Linie / Padding-Issues.
+    var onFormatDiagnostic: ((String) -> Void)?
 
     private func recordTrace(_ event: String) {
         let ts = Int((Date().timeIntervalSince1970 * 1000).truncatingRemainder(dividingBy: 1_000_000))
