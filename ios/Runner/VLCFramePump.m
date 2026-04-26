@@ -321,10 +321,8 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         CVPixelBufferPoolRelease(_pool);
         _pool = NULL;
     }
-    if (_formatDesc) {
-        CFRelease(_formatDesc);
-        _formatDesc = NULL;
-    }
+    // _formatDesc wird nicht mehr gecached — bauen es pro Frame
+    // via CMVideoFormatDescriptionCreateForImageBuffer auf.
 
     // NV12 = 4:2:0 biplanar, video-range (limited 16-235 für Y,
     // 16-240 für CbCr). Das ist was libvlc bei den meisten Codecs
@@ -368,18 +366,6 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     _pitchUV = CVPixelBufferGetBytesPerRowOfPlane(probe, 1);
     CVPixelBufferRelease(probe);
 
-    // CMVideoFormatDescription für NV12.
-    OSStatus s = CMVideoFormatDescriptionCreate(
-        kCFAllocatorDefault,
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        width, height,
-        NULL,
-        &_formatDesc);
-    if (s != noErr) {
-        NSLog(@"[VLCFramePump] CMVideoFormatDescriptionCreate FAILED: %d", (int)s);
-        return NO;
-    }
-
     _width = width;
     _height = height;
     NSLog(@"[VLCFramePump] pool ready (NV12) %dx%d pitchY=%zu pitchUV=%zu",
@@ -389,21 +375,15 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
 - (void)_enqueueBufferFromPicture:(CVPixelBufferRef)pixelBuffer
 {
-    if (!pixelBuffer || !_formatDesc) return;
-    // Nach detach() KEIN enqueue mehr — die Layer wird gerade aus
-    // der View-Hierarchie genommen. Frames die jetzt noch
-    // einlaufen lassen wir einfach fallen.
+    if (!pixelBuffer) return;
     if (!_attached) return;
     AVSampleBufferDisplayLayer *layer = self.displayLayer;
     if (!layer) return;
 
     // Color-Attachments für korrekte YUV→RGB-Konvertierung. Ohne
     // diese rendert die DisplayLayer NV12-Buffer mit Standard-
-    // Annahmen (oft falsch) → grünstichige oder zu dunkle Bilder.
-    // BT.709 ist HD-Standard und passt für 99% der Real-World-
-    // Files (h264/h265 in 720p/1080p). SD-Content (480p) wäre
-    // strikt BT.601 — der Color-Shift ist aber so klein dass
-    // wir das in Kauf nehmen statt per-Frame zu klassifizieren.
+    // Annahmen → grünstichige oder zu dunkle Bilder.
+    // BT.709 = HD-Standard.
     CVBufferSetAttachment(pixelBuffer,
                           kCVImageBufferYCbCrMatrixKey,
                           kCVImageBufferYCbCrMatrix_ITU_R_709_2,
@@ -417,17 +397,35 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
                           kCVImageBufferTransferFunction_ITU_R_709_2,
                           kCVAttachmentMode_ShouldPropagate);
 
-    // Layer-Status checken. Wenn .failed, flush und neu starten.
+    // Layer-Status checken. Wenn .failed, flush und error logen
+    // damit man's beim nächsten Build im NSLog sieht.
     if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
-        NSLog(@"[VLCFramePump] DisplayLayer status=failed, flush");
+        NSError *err = layer.error;
+        NSLog(@"[VLCFramePump] DisplayLayer status=failed err=%@, flush",
+              err);
         [layer flush];
     }
 
-    // PTS = aktuelle Host-Time aus CoreMedia. AVSampleBufferDisplayLayer
-    // braucht einen *gültigen* PTS pro Frame — sonst geht layer.status
-    // auf .failed. Da wir `kCMSampleAttachmentKey_DisplayImmediately`
-    // unten setzen, wird der PTS-Wert für die Anzeige-Pacing aber
-    // ignoriert; nur sein "valid"-Flag muss stehen.
+    // CMVideoFormatDescription PRO FRAME aus dem PixelBuffer
+    // ableiten — die offizielle API dafür. Vorher hatten wir die
+    // Description manuell via CMVideoFormatDescriptionCreate gebaut
+    // und einmal gecached. Bei NV12 (biplanar) hat das aber nicht
+    // alle Plane-Geometrie-Infos drin die AVSampleBufferDisplayLayer
+    // erwartet → Layer akzeptiert die SampleBuffer nicht, Bild bleibt
+    // schwarz. CreateForImageBuffer holt sich die exakten Info aus
+    // dem CVPixelBuffer selbst, ist garantiert konsistent.
+    CMVideoFormatDescriptionRef formatDesc = NULL;
+    OSStatus fs = CMVideoFormatDescriptionCreateForImageBuffer(
+        kCFAllocatorDefault, pixelBuffer, &formatDesc);
+    if (fs != noErr || !formatDesc) {
+        NSLog(@"[VLCFramePump] FormatDescCreateForImageBuffer FAILED: %d",
+              (int)fs);
+        return;
+    }
+
+    // PTS = aktuelle Host-Time. DisplayImmediately-Attachment unten
+    // sorgt dafür dass die Layer den Frame sofort rendert statt
+    // auf seine PTS zu warten.
     CMTime pts = CMClockGetTime(CMClockGetHostTimeClock());
 
     CMSampleTimingInfo timing = {
@@ -440,9 +438,10 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     OSStatus s = CMSampleBufferCreateReadyWithImageBuffer(
         kCFAllocatorDefault,
         pixelBuffer,
-        _formatDesc,
+        formatDesc,
         &timing,
         &sampleBuffer);
+    CFRelease(formatDesc);
     if (s != noErr || !sampleBuffer) {
         NSLog(@"[VLCFramePump] CMSampleBufferCreate FAILED: %d", (int)s);
         return;
