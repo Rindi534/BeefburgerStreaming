@@ -337,7 +337,22 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
-        // System-PiP-UI hat den Play/Pause-Button gedrückt.
+        // KRITISCH: Während ein Skip läuft, ignorieren wir setPlaying(false).
+        //
+        // Apples PiP-Konvention für SampleBuffer-Delegates ist: iOS
+        // ruft setPlaying(false) AUTOMATISCH beim Skip-Button-Tap auf,
+        // dann skipByInterval, dann setPlaying(true) wenn fertig.
+        // Diese implizite Pause-während-Skip ist für AVPlayer (der
+        // den Seek-Buffer transparent zeigt) sinnvoll — für unsere
+        // libvlc-Pipeline kollidiert sie aber mit dem play()-Cascade
+        // im skipByInterval-Handler. Resultat: schnelles Flackern
+        // zwischen Play/Pause-Symbol bis irgendeine Seite gewinnt.
+        //
+        // Wir filtern den iOS-Pause-Call während skipInProgress raus.
+        if skipInProgress && !playing {
+            NSLog("[VLCPiP] setPlaying(false) während Skip — ignoriert")
+            return
+        }
         if playing {
             mediaPlayer?.play()
         } else {
@@ -435,18 +450,24 @@ extension VLCPiPCoordinator: AVPictureInPictureSampleBufferPlaybackDelegate {
         // Recursive poll function — bis zum Frame-Threshold ODER
         // Timeout. WICHTIG: completionHandler darf NUR EINMAL
         // aufgerufen werden — guard via local flag.
+        //
+        // Pro-Tick: NUR play() + Timebase rate=1. KEIN
+        // invalidatePlaybackState bei jedem Tick — das löst
+        // Flackern aus weil iOS dann sofort isPlaybackPaused neu
+        // abfragt UND den Skip-typischen setPlaying(false)-Call
+        // nochmal feuert. Stattdessen verlassen wir uns auf das
+        // skipInProgress-Flag und den setPlaying-Filter um die
+        // UI stabil zu halten. invalidatePlaybackState rufen wir
+        // nur EINMAL am Ende auf.
         var didComplete = false
         func tick() {
             if didComplete { return }
-            // Pro-Tick: play+timebase+invalidate damit iOS-PiP
-            // konsistent "playing" sieht.
             if let p = self.mediaPlayer {
                 p.play()
             }
             if let tb = self.displayLayer.controlTimebase {
                 CMTimebaseSetRate(tb, rate: 1.0)
             }
-            self.pipController?.invalidatePlaybackState()
 
             let now = Date().timeIntervalSince1970
             let elapsed = now - startTs
