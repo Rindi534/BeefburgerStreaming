@@ -278,6 +278,22 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       setState(() => _pipAvailable = avail);
     });
 
+    // Temporär für die grüne-Linie-Debugging-Iteration: Format-
+    // Diagnose-Snackbar. Wird beim nächsten Bug-Fix-Commit wieder
+    // entfernt — bleibt bis das Pixel-Format-Problem isoliert ist.
+    ctrl.subDebugStream.listen((msg) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 12),
+          content: Text(
+            msg,
+            style: const TextStyle(fontFamily: 'Courier', fontSize: 12),
+          ),
+        ),
+      );
+    });
   }
 
   /// Orientation zurück auf Portrait-Lock (App-global). Muss VOR
