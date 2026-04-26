@@ -441,33 +441,63 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
                           kCVAttachmentMode_ShouldPropagate);
 
     // CleanAperture: die ECHTE Display-Größe vom VLCMediaPlayer
-    // ablesen und als Crop-Hint auf den Buffer setzen. Hintergrund:
-    // h264/h265-Encoder padden Frames bis zum nächsten 16er-
-    // Multiple (1080p → 1088, 720p → 720 (passt), etc.) für ihre
-    // Macroblock-Pipeline. libvlc gibt uns die ENCODED dimensions
-    // (= 1088), nicht die DISPLAY dimensions (= 1080). Die letzten
-    // 8 Zeilen sind technisch dekodiert aber nicht zur Anzeige
-    // bestimmt — sie enthalten oft schwarz/grünen Decoder-Müll.
-    // AVSampleBufferDisplayLayer respektiert kCVImageBufferCleanAperture
-    // und croppt entsprechend → grüner Streifen weg.
+    // ablesen und Crop-Hints setzen. Diagnose-Snackbar v1.7.5 hat
+    // bestätigt: libvlc=1456x1088 vs videoSize=1448x1080 (oder
+    // 1920x1088 vs 1920x1080) — h264-Macroblock-Padding bis zum
+    // nächsten 16er-Multiple. Die letzten 8 Zeilen sind decoder-
+    // padding-Müll und produzieren den grünen Streifen.
+    //
+    // Zwei parallele Mechanismen:
+    //   1. CleanAperture-Attachment (offizielle Apple-API) mit
+    //      korrekten OFFSETS — Apples Konvention: Offset zwischen
+    //      aperture-center UND encoded-center. Padding ist rechts+
+    //      unten, also liegt aperture-center oberhalb-links von
+    //      encoded-center → NEGATIVE Offsets. Vorher hatte ich =0
+    //      gesetzt, was bedeutet "aperture ist im encoded zentriert"
+    //      — wäre nur korrekt wenn padding gleichmäßig auf allen
+    //      seiten wäre.
+    //   2. contentsRect auf der DisplayLayer — visueller Crop. Falls
+    //      AVSampleBufferDisplayLayer kCVImageBufferCleanAperture
+    //      ignoriert (bekannte Limitation in manchen iOS-Versionen),
+    //      übernimmt contentsRect das Cropping direkt im Compositing.
     VLCMediaPlayer *player = _player;
     if (player) {
         CGSize displaySize = player.videoSize;
         if (displaySize.width > 0 && displaySize.height > 0 &&
             (displaySize.width < (CGFloat)_width ||
              displaySize.height < (CGFloat)_height)) {
+            CGFloat hOffset = (displaySize.width - (CGFloat)_width) / 2.0;
+            CGFloat vOffset = (displaySize.height - (CGFloat)_height) / 2.0;
             NSDictionary *aperture = @{
                 (id)kCVImageBufferCleanApertureWidthKey:
                     @(displaySize.width),
                 (id)kCVImageBufferCleanApertureHeightKey:
                     @(displaySize.height),
-                (id)kCVImageBufferCleanApertureHorizontalOffsetKey: @0,
-                (id)kCVImageBufferCleanApertureVerticalOffsetKey: @0,
+                (id)kCVImageBufferCleanApertureHorizontalOffsetKey: @(hOffset),
+                (id)kCVImageBufferCleanApertureVerticalOffsetKey: @(vOffset),
             };
             CVBufferSetAttachment(pixelBuffer,
                                   kCVImageBufferCleanApertureKey,
                                   (__bridge CFDictionaryRef)aperture,
                                   kCVAttachmentMode_ShouldPropagate);
+
+            // Fallback-Crop via Layer-contentsRect. Werte in
+            // normalisierten Koordinaten (0..1). Padding nur an
+            // rechter und unterer Kante → Origin bei (0,0), Width/
+            // Height = displaySize / encodedSize.
+            CGRect contentsRect = CGRectMake(
+                0, 0,
+                displaySize.width / (CGFloat)_width,
+                displaySize.height / (CGFloat)_height);
+            // Auf Main-Queue setzen — contentsRect ist eine UIView/
+            // Layer-Property, sollte nicht aus dem Decoder-Thread
+            // angefasst werden.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                AVSampleBufferDisplayLayer *l = self.displayLayer;
+                if (l && !CGRectEqualToRect(l.contentsRect, contentsRect)) {
+                    l.contentsRect = contentsRect;
+                }
+            });
         }
     }
 
