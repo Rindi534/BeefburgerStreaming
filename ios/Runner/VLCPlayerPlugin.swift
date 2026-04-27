@@ -222,51 +222,14 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // trivial zu füllen (Disk-I/O ist schneller als Real-Time-
         // Playback), ein großer Vorrat bringt nichts außer Latenz.
         media.addOption(":file-caching=300")
-        // ─── Subtitle stability ───────────────────────────────────────
-        // User-Report v1.5.30: Untertitel "flackern — sind da und
-        // verschwinden wieder". Ursachen-Analyse:
-        //
-        // 1. Dropped/skipped Frames: Wenn VLCKit unter Last Frames
-        //    verwirft, wird das Subtitle-Overlay MIT verworfen — es
-        //    erscheint erst beim nächsten "ganzen" Frame neu. Auf
-        //    iPhones mit Metal-HW-Decode ist das unter 4K HEVC +
-        //    externem .srt gut reproduzierbar. Fix: drop/skip deaktivieren.
-        //
-        // 2. `:sub-text-scale=100` forcierte v1.5.24+ einen Glyph-Cache-
-        //    Reset bei jedem Subtitle-Track-Wechsel. 100 ist VLCs
-        //    Default — die Option explizit zu setzen triggerte den Re-
-        //    Render. Raus damit; VLC verwendet eh schon 100.
-        //
-        // 3. `:freetype-rel-fontsize` steuert die Subtitle-Schriftgröße
-        //    relativ zur Videohöhe (kleiner = größer). 16 ist der
-        //    Default-Wert, explizit gesetzt stabilisiert es aber den
-        //    Font-Layout-Cache (VLC nutzt den Wert als Cache-Key und
-        //    vermeidet Invalidierungen bei Auflösungswechseln der
-        //    Rendering-Surface — relevant wenn PiP-Layer-Size anders
-        //    ist als die Haupt-Drawable).
-        media.addOption(":no-drop-late-frames")
-        media.addOption(":no-skip-frames")
-        media.addOption(":freetype-rel-fontsize=16")
-
-        // ─── Subtitle compositing forcen ────────────────────────────
-        // Wenn libvlc mit `libvlc_video_set_callbacks` ins Memory-Output
-        // rendert, wird der SPU-Compositor manchmal NICHT in die Vout-
-        // Pipeline eingehängt — Subtitles werden dekodiert (lib-cur=2
-        // in Diagnose) aber nie ins Frame eingebrannt.
-        //
-        // Trick: zwei `invert`-Filter hintereinander aktivieren. Visuell
-        // ist das identity (zweimal Farbe-invertieren = original), aber
-        // die bloße Anwesenheit eines video-filters zwingt libvlc die
-        // komplette filter chain zu instantiieren — inkl. spu_blend.
-        // Vorher hatten wir `:video-filter=adjust` versucht (default
-        // = identity), das hat nicht gegriffen weil adjust mit
-        // default-Werten von libvlc als no-op erkannt und gleich
-        // wieder aus der Chain rausgenommen wird.
-        media.addOption(":video-filter=invert:invert")
-        // Positive Bestätigung dass SPU eingeschaltet ist — default
-        // ist es zwar an, aber explizit setzen schadet nicht falls
-        // irgendein anderes module-config das implicit deaktiviert.
-        media.addOption(":spu")
+        // Subtitle-Compositing-Test: alle Frame-Drop/Skip/Filter/Font-
+        // Options aus früheren Iterationen entfernt um zu prüfen ob
+        // eine davon den spu_blend-Filter verhindert. v1.7.8 mit
+        // :video-filter=invert:invert hat nichts gebracht — die
+        // SPU kommt einfach nicht durch das memory-output-Modul von
+        // libvlc. Falls dieser minimal-config-Test auch nicht hilft,
+        // ist es eine harte libvlc-Architektur-Limitation und wir
+        // bauen die Subs Dart-side selbst.
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
