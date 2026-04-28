@@ -22,6 +22,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/episode.dart';
 import '../providers/watch_progress_provider.dart';
 import '../services/srt_parser.dart';
+import '../services/subtitle_extractor.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ios_vlc_player_view.dart';
 import '../widgets/subtitle_overlay.dart';
@@ -82,21 +83,29 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   List<VlcTrack> _audioTracks = const [];
   List<VlcTrack> _subtitleTracks = const [];
 
-  // ─── Dart-side Subtitle-Pipeline (Phase 1: externe .srt) ────────
+  // ─── Dart-side Subtitle-Pipeline ────────────────────────────────
   // libvlcs `vmem` (memory output) compositet keine SPU in unseren
   // Frame-Buffer — Architektur-Limitation in MobileVLCKits libvlc-
   // Build, durch keine Media-Option umgehbar. Workaround: wir parsen
   // die Subs Dart-side und rendern als Text-Overlay über die
   // DisplayLayer.
   //
-  // Phase 1 (jetzt): externe `.srt` neben dem Video (widget.
-  // subtitlePath) — sofort beim Mount geladen, Default-On wenn
-  // vorhanden.
-  // Phase 2 (Folgecommit): embedded MKV-Subs werden via
-  // ffmpeg-kit beim ersten Open extrahiert und durch dieselbe
-  // Render-Pipeline angezeigt.
+  // ZWEI Quellen für Tracks:
+  //   1. Externe `.srt` neben dem Video (widget.subtitlePath) —
+  //      sofort beim Mount geladen.
+  //   2. Embedded MKV-Subs — via SubtitleExtractor (ffmpeg-kit)
+  //      beim Mount asynchron extrahiert und gecached. Erscheinen
+  //      im Sub-Menü sobald die Extraction fertig ist.
+  //
+  // [_activeSubEntries] zeigt auf die aktuell anzuzeigenden Subs.
+  // Wir können entweder externe ODER einen extracted-track
+  // gleichzeitig anzeigen, nicht beides parallel.
   List<SubtitleEntry> _externalSubs = const [];
-  bool _externalSubsEnabled = false;
+  List<ExtractedSubtitleTrack> _embeddedTracks = const [];
+  List<SubtitleEntry> _activeSubEntries = const [];
+  bool _subsVisible = false;
+  // ID des aktuell sichtbaren Sub-Tracks (für UI-Selection-Highlight).
+  int _activeSubTrackId = -1;
 
   // Next-Episode-Countdown. _showNextEpisode wird true wenn Position ≥ 95%
   // der Dauer (entsprechend player_screen.dart auf Windows). _watchingCredits
@@ -165,23 +174,67 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     ]);
 
     _scheduleControlsHide();
-    _loadExternalSubs();
+    _loadAllSubtitleSources();
   }
 
-  /// Lädt externe `.srt` neben dem Video (Pfad kommt aus
-  /// widget.subtitlePath). Wenn erfolgreich, Overlay default-on.
-  /// Async — blockt nicht das Initial-Mount.
-  Future<void> _loadExternalSubs() async {
-    final path = _currentSubtitlePath;
-    if (path == null || path.isEmpty) return;
-    final entries = await SrtParser.parseFile(path);
-    if (!mounted) return;
-    if (entries.isNotEmpty) {
-      setState(() {
-        _externalSubs = entries;
-        _externalSubsEnabled = true;
-      });
+  /// Startet beide Sub-Lade-Pfade parallel:
+  ///   1. Externe `.srt` neben dem Video (sofort, schnell)
+  ///   2. Embedded MKV-Sub-Tracks via ffmpeg-kit Extraktion
+  ///      (asynchron, dauert 5-15s beim ersten Open, danach
+  ///      gecached → instant)
+  /// Beide Pfade aktualisieren ihre State-Variablen unabhängig.
+  /// Wenn die externe SRT zuerst da ist, aktivieren wir die
+  /// gleich; sobald ein User aus dem Menü einen embedded-Track
+  /// wählt, schaltet die Selection um.
+  Future<void> _loadAllSubtitleSources() async {
+    // Kanal 1: externe SRT (synchron, schnell).
+    final extPath = _currentSubtitlePath;
+    if (extPath != null && extPath.isNotEmpty) {
+      final entries = await SrtParser.parseFile(extPath);
+      if (!mounted) return;
+      if (entries.isNotEmpty) {
+        setState(() {
+          _externalSubs = entries;
+          // Default-on wenn vorhanden — User kann via Menü ändern.
+          _activeSubEntries = entries;
+          _subsVisible = true;
+          _activeSubTrackId = _kVirtualExternalSrtTrackId;
+        });
+      }
     }
+
+    // Kanal 2: embedded extraction. Läuft im Background — wenn
+    // der User schon einen externen Sub aktiv hat, ändern wir
+    // die Selection NICHT, fügen aber die extracted Tracks ins
+    // Menü ein damit man dazwischen wechseln kann.
+    final embedded = await SubtitleExtractor.extractTracks(_currentFilePath);
+    if (!mounted) return;
+    if (embedded.isNotEmpty) {
+      setState(() {
+        _embeddedTracks = embedded;
+      });
+      // Wenn KEIN externer Sub geladen ist, aktiviere automatisch
+      // den ersten embedded-Track (User-Convenience).
+      if (_externalSubs.isEmpty &&
+          !_subsVisible &&
+          embedded.isNotEmpty) {
+        await _selectEmbeddedTrack(embedded.first);
+      }
+    }
+  }
+
+  /// Lädt eine extracted .srt und macht sie zur aktiven Sub-Quelle.
+  Future<void> _selectEmbeddedTrack(ExtractedSubtitleTrack track) async {
+    final entries = await SrtParser.parseFile(track.srtPath);
+    if (!mounted) return;
+    setState(() {
+      _activeSubEntries = entries;
+      _subsVisible = entries.isNotEmpty;
+      _activeSubTrackId = track.sourceIndex;
+    });
+    // libvlc-Track auf -1 — wir rendern Dart-side, libvlc soll
+    // gar nicht versuchen.
+    await _controller?.setSubtitleTrack(-1);
   }
 
   @override
@@ -422,6 +475,9 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     await _refreshTracks();
   }
 
+  // Behalten als generischer libvlc-track-setter (auch wenn aktuell
+  // im Sub-Menü direkt gerufen wird) — Symmetrie zum Audio-Pfad.
+  // ignore: unused_element
   Future<void> _setSubtitleTrack(int id) async {
     await _controller?.setSubtitleTrack(id);
     await _refreshTracks();
@@ -484,10 +540,13 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       _watchingCredits = false;
       _audioTracks = const [];
       _subtitleTracks = const [];
-      // Externe Subs für die alte Folge wegwerfen — neue werden
-      // gleich asynchron geladen.
+      // Subs der alten Folge komplett zurücksetzen — neue Quellen
+      // werden gleich asynchron geladen.
       _externalSubs = const [];
-      _externalSubsEnabled = false;
+      _embeddedTracks = const [];
+      _activeSubEntries = const [];
+      _subsVisible = false;
+      _activeSubTrackId = -1;
     });
 
     ctrl.replaceMedia(
@@ -495,8 +554,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       subtitlePath: nextEp.subtitlePath,
       startPosition: Duration.zero,
     );
-    // Externe SRT der neuen Folge laden (asynchron).
-    _loadExternalSubs();
+    // Beide Sub-Quellen für die neue Folge nachziehen.
+    _loadAllSubtitleSources();
   }
 
   @override
@@ -522,18 +581,16 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           ),
 
           // Dart-side Subtitle-Overlay — liegt direkt über der
-          // VLC-Layer aber unter den Controls. Workaround für
-          // libvlcs vmem das SPU nicht in unsere Frame-Buffer
-          // compositet. Phase 1: nur externe `.srt` aus
-          // widget.subtitlePath. Phase 2 wird embedded MKV-Subs
-          // via ffmpeg-kit-Extraktion durch dieselbe Pipeline
-          // anzeigen.
-          if (_externalSubsEnabled &&
-              _externalSubs.isNotEmpty &&
+          // VLC-Layer aber unter den Controls. Quelle ist
+          // _activeSubEntries: entweder externe .srt (über
+          // widget.subtitlePath) oder eine via ffmpeg-kit
+          // extracted .srt aus den embedded MKV-Tracks.
+          if (_subsVisible &&
+              _activeSubEntries.isNotEmpty &&
               _controller != null)
             Positioned.fill(
               child: SubtitleOverlay(
-                entries: _externalSubs,
+                entries: _activeSubEntries,
                 positionStream: _controller!.positionStream,
                 initialPosition: _position,
               ),
@@ -674,12 +731,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 _buildEdgeIcon(
                   icon: Icons.subtitles_rounded,
                   tooltip: 'Untertitel',
-                  // Auch enabled wenn nur externe SRT vorhanden ist
-                  // (kein libvlc-Track aber Dart-side Overlay).
+                  // Enabled wenn IRGENDEINE Sub-Quelle vorhanden ist:
+                  // extern, embedded extracted, oder libvlc-track-Liste.
                   enabled: _subtitleTracks.isNotEmpty ||
-                      _externalSubs.isNotEmpty,
+                      _externalSubs.isNotEmpty ||
+                      _embeddedTracks.isNotEmpty,
                   onPressed: (_subtitleTracks.isNotEmpty ||
-                          _externalSubs.isNotEmpty)
+                          _externalSubs.isNotEmpty ||
+                          _embeddedTracks.isNotEmpty)
                       ? () => _openSubtitleMenu(context)
                       : null,
                 ),
@@ -798,44 +857,71 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   /// nach 900ms, außer der User tippt währenddessen einen anderen
   /// Eintrag — dann reset und wieder 900ms.
   ///
-  /// Track-Liste:
-  ///   - "Aus" (id=-1)
-  ///   - Wenn externe `.srt` vorhanden: "Datei (extern)" als
-  ///     virtueller Track id=-100 (negativ damit kein Konflikt mit
-  ///     libvlc-Track-IDs). Klick toggelt _externalSubsEnabled.
-  ///   - Embedded libvlc-Tracks (id=0,1,...) — werden noch von
-  ///     libvlc decoded, aber nicht visible bis Phase 2 mit
-  ///     ffmpeg-kit-Extraction ankommt.
+  /// Track-Liste in der Reihenfolge:
+  ///   - "Aus" (id=-1, vom Track-Menü selbst eingefügt)
+  ///   - "Datei (extern)" — Virtual-ID, wenn externe .srt da
+  ///   - Embedded extracted Tracks — Virtual-IDs >= 0
+  ///   - libvlc-Tracks (Fallback, IDs aus libvlc) — falls extracted
+  ///     fehlgeschlagen ist und libvlc trotzdem was kennt
   static const int _kVirtualExternalSrtTrackId = -100;
+  // Embedded-Track-IDs sind > 0, mappen 1:1 auf
+  // ExtractedSubtitleTrack.sourceIndex (0..N-1) im Sub-Menü.
 
   Future<void> _openSubtitleMenu(BuildContext context) async {
     _scheduleControlsHide();
-    final hasExternal = _externalSubs.isNotEmpty;
-    final tracks = <VlcTrack>[
-      if (hasExternal)
-        VlcTrack(
-          id: _kVirtualExternalSrtTrackId,
-          name: 'Datei (extern)',
-          isCurrent: _externalSubsEnabled,
-        ),
-      ..._subtitleTracks,
-    ];
+    final tracks = <VlcTrack>[];
+
+    // Externe .srt zuerst.
+    if (_externalSubs.isNotEmpty) {
+      tracks.add(VlcTrack(
+        id: _kVirtualExternalSrtTrackId,
+        name: 'Datei (extern)',
+        isCurrent: _activeSubTrackId == _kVirtualExternalSrtTrackId &&
+            _subsVisible,
+      ));
+    }
+    // Embedded extracted tracks.
+    for (final t in _embeddedTracks) {
+      tracks.add(VlcTrack(
+        id: t.sourceIndex,
+        name: t.displayName,
+        isCurrent:
+            _activeSubTrackId == t.sourceIndex && _subsVisible,
+      ));
+    }
+    // libvlc-Tracks NICHT in die Liste — die rendern eh nicht
+    // (vmem-Limitation), und unsere extracted Tracks decken den
+    // gleichen Inhalt ab. Wenn ffmpeg-kit aus irgendeinem Grund
+    // nichts extrahieren konnte (PGS image-subs zb), bleibt das
+    // Menü leer für embedded — User sieht "nichts da".
+
     await _showTrackMenu(
       context: context,
       title: 'Untertitel',
       tracks: tracks,
       onSelect: (id) async {
-        if (id == _kVirtualExternalSrtTrackId) {
-          // Externe SRT toggeln. libvlc-Track gleichzeitig auf -1
-          // damit kein doppelter Decoder-Pfad versucht zu rendern.
-          setState(() => _externalSubsEnabled = !_externalSubsEnabled);
+        if (id == -1) {
+          // "Aus"
+          setState(() {
+            _subsVisible = false;
+            _activeSubTrackId = -1;
+          });
+          await _controller?.setSubtitleTrack(-1);
+        } else if (id == _kVirtualExternalSrtTrackId) {
+          // Externe SRT
+          setState(() {
+            _activeSubEntries = _externalSubs;
+            _subsVisible = true;
+            _activeSubTrackId = _kVirtualExternalSrtTrackId;
+          });
           await _controller?.setSubtitleTrack(-1);
         } else {
-          // Embedded oder Aus: externe abschalten + libvlc-Track setzen.
-          if (_externalSubsEnabled) {
-            setState(() => _externalSubsEnabled = false);
-          }
-          await _setSubtitleTrack(id);
+          // Embedded extracted Track
+          final track = _embeddedTracks.firstWhere(
+            (t) => t.sourceIndex == id,
+            orElse: () => _embeddedTracks.first,
+          );
+          await _selectEmbeddedTrack(track);
         }
       },
     );
