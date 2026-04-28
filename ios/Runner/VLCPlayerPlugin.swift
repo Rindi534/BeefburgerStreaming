@@ -65,6 +65,16 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     private let mediaPlayer: VLCMediaPlayer
     private let viewId: Int64
 
+    /// Sub-Render-View. libvlc rendert hier IM PARALLEL zur memory-
+    /// output-Pipeline (vmem) hinein — falls libvlc beides
+    /// gleichzeitig supportet, sehen wir hier das Bild MIT
+    /// eingebrannten Untertiteln, während die DisplayLayer (für PiP)
+    /// vom vmem ohne Subs gefüttert wird. Liegt ÜBER der DisplayLayer
+    /// im container, mit transparentem Hintergrund — wenn libvlc das
+    /// drawable ignoriert (callbacks gewinnen), bleibt die Layer
+    /// transparent und die DisplayLayer scheint durch.
+    private let subRenderView: UIView
+
     private let methodChannel: FlutterMethodChannel
     private let eventChannel: FlutterEventChannel
     private let eventSink = VLCEventSinkProxy()
@@ -96,6 +106,16 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.container = UIView(frame: frame)
         self.container.backgroundColor = .black
 
+        // SubRenderView mit transparentem Hintergrund. Falls libvlc
+        // den drawable-Pfad parallel zu unseren memory-callbacks
+        // bedient, rendert es hier rein — wir sehen Video MIT Subs.
+        // Wenn libvlc den drawable ignoriert (vmem-callbacks
+        // gewinnen) bleibt die View transparent.
+        self.subRenderView = UIView(frame: frame)
+        self.subRenderView.backgroundColor = .clear
+        self.subRenderView.isOpaque = false
+        self.subRenderView.contentMode = .scaleAspectFit
+
         self.mediaPlayer = VLCMediaPlayer()
 
         let channelSuffix = "\(viewId)"
@@ -126,19 +146,29 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             // wieder da, aber Playback funktioniert.
         }
 
-        // mediaPlayer.drawable wird BEWUSST nicht gesetzt:
-        // Mit libvlc_video_set_callbacks (durch VLCFramePump unten)
-        // umgehen wir libvlcs eigenen vout-Pfad komplett. Frames
-        // landen direkt in der AVSampleBufferDisplayLayer aus dem
-        // PiP-Coordinator. Das ist sowohl Foreground-Renderer (in
-        // self.container) als auch PiP-Source — eine Quelle, kein
-        // Dual-Pipeline-Drift mehr.
+        // mediaPlayer.drawable wird gesetzt — Test ob libvlc PARALLEL
+        // zum vmem-output (durch VLCFramePump unten) auch den drawable
+        // bedient. Wenn ja: subRenderView zeigt Video mit eingebrannten
+        // Untertiteln, vmem füttert weiter unsere DisplayLayer für PiP.
+        // Wenn libvlc nur eines bedient (typisch vmem wenn callbacks
+        // gesetzt), bleibt subRenderView transparent — kein Bruch.
+        self.mediaPlayer.drawable = self.subRenderView
         self.mediaPlayer.delegate = self
 
         self.eventChannel.setStreamHandler(self.eventSink)
         self.methodChannel.setMethodCallHandler { [weak self] call, result in
             self?.handleMethodCall(call, result: result)
         }
+
+        // subRenderView OBEN in der Container-View — über der vom
+        // PiP-Coordinator eingehängten DisplayLayer. Wenn libvlc
+        // beides bedient, sieht der User libvlc-Render mit Subs.
+        // Wenn nur callbacks bedient werden, bleibt subRenderView
+        // transparent und die DisplayLayer scheint durch.
+        self.subRenderView.frame = self.container.bounds
+        self.subRenderView.autoresizingMask =
+            [.flexibleWidth, .flexibleHeight]
+        self.container.addSubview(self.subRenderView)
 
         // PiP-Coordinator: hängt VLCFramePump (libvlc-Frame-Callbacks)
         // an den Player und mounted die AVSampleBufferDisplayLayer
