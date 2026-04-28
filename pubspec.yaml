@@ -1,7 +1,7 @@
 name: beefburger_streaming
 description: "BeefburgerStreaming — deine lokale Streaming-Plattform für Filme und Serien."
 publish_to: 'none'
-version: 1.8.1+89
+version: 1.8.0+88
 
 environment:
   sdk: ^3.11.4
@@ -35,15 +35,6 @@ dependencies:
   # Process.start('explorer', ...) call on iOS where shelling out is
   # forbidden by the sandbox.
   url_launcher: ^6.3.0
-  # ffmpeg-kit-flutter (community fork, maintained successor of the
-  # discontinued ffmpeg_kit_flutter): used to extract embedded
-  # subtitle streams from .mkv files into .srt cache files. libvlcs
-  # vmem path doesnt composite SPU into our buffer, so we read the
-  # subs out of the file directly and render them Dart-side via
-  # SubtitleOverlay. Bundle adds ~30 MB to the iOS .ipa for the
-  # min-gpl ffmpeg variant — acceptable cost for a feature that
-  # otherwise wouldnt work at all on the libvlc backend.
-  ffmpeg_kit_flutter_new: ^3.0.0
 
 dev_dependencies:
   flutter_test:
