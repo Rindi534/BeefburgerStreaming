@@ -278,6 +278,12 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // Trade-off: HEVC Software-Decoding ist langsamer als Hardware
         // (auf A12+ aber problemlos). Wert es für Subs.
         media.addOption(":codec=avcodec")
+        // Subtitle-Größe dezenter machen. libvlc-Default ist
+        // `freetype-rel-fontsize=16` → 1080p / 16 = ~67px Schriftgröße,
+        // gefühlt "zu groß für iPhone-Display". Bei 24 wird's 1080p/24
+        // = ~45px — vergleichbar mit Netflix-Standard, lesbar aber
+        // unaufdringlich.
+        media.addOption(":freetype-rel-fontsize=24")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
