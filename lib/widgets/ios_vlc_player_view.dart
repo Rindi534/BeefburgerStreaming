@@ -200,6 +200,14 @@ class IOSVLCPlayerController {
   Future<void> setSubtitleTrack(int id) =>
       _methods.invokeMethod('setSubtitleTrack', {'id': id});
 
+  /// Diagnose: holt die letzten ~50 KB des libvlc-internen Logs.
+  /// Wird im Sub-Debug-Snackbar angezeigt damit wir sehen warum
+  /// SPU-Compositing nicht klappt.
+  Future<String> getLibvlcLog() async {
+    final s = await _methods.invokeMethod<String>('getLibvlcLog');
+    return s ?? '';
+  }
+
   List<VlcTrack> _decodeTracks(List<dynamic>? raw) {
     if (raw == null) return const [];
     return raw.whereType<Map>().map((m) {

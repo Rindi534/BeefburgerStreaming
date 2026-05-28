@@ -118,6 +118,12 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
 
         self.mediaPlayer = VLCMediaPlayer()
 
+        // libvlc-internes Logging anschalten — wir bekommen alle
+        // Decoder/Vout/SPU-Messages in eine Datei in App-Support.
+        // Hilft uns endlich zu sehen WARUM Subs nicht composited
+        // werden, statt zu raten.
+        VLCLibvlcLogger.attach()
+
         let channelSuffix = "\(viewId)"
         self.methodChannel = FlutterMethodChannel(
             name: "beefburger/vlc_player/methods/\(channelSuffix)",
@@ -252,14 +258,19 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // trivial zu füllen (Disk-I/O ist schneller als Real-Time-
         // Playback), ein großer Vorrat bringt nichts außer Latenz.
         media.addOption(":file-caching=300")
-        // Subtitle-Compositing-Test: alle Frame-Drop/Skip/Filter/Font-
-        // Options aus früheren Iterationen entfernt um zu prüfen ob
-        // eine davon den spu_blend-Filter verhindert. v1.7.8 mit
-        // :video-filter=invert:invert hat nichts gebracht — die
-        // SPU kommt einfach nicht durch das memory-output-Modul von
-        // libvlc. Falls dieser minimal-config-Test auch nicht hilft,
-        // ist es eine harte libvlc-Architektur-Limitation und wir
-        // bauen die Subs Dart-side selbst.
+        // Verbose-Logging für libvlc — landet via VLCLibvlcLogger in
+        // Application Support / vlc-debug.log. Damit sehen wir was
+        // genau bei der SPU-Pipeline passiert (welche Module geladen
+        // werden, welche filter eingehängt, ob spu_blend aktiv ist).
+        media.addOption(":verbose=3")
+        // Zwei Test-Optionen die wir noch nicht probiert haben:
+        // :overlay erzwingt overlay-engine an (default ist YES, aber
+        // explizit setzen schadet nicht falls irgendwo deaktiviert).
+        media.addOption(":overlay")
+        // :spu-track-id=-1 sagt libvlc den AKTIVEN Track durch den
+        // User-API-Call (currentVideoSubTitleIndex) wählen zu lassen
+        // statt auto-disable.
+        media.addOption(":sub-autodetect-file")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
@@ -423,6 +434,11 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             } else {
                 result(false)
             }
+        case "getLibvlcLog":
+            // Diagnose: liefert die letzten ~50 KB des libvlc-internen
+            // Logs an Dart zurück damit wir das in der UI anzeigen
+            // können.
+            result(VLCLibvlcLogger.readLogTail())
         case "dispose":
             // Reihenfolge KRITISCH (Crash-Bug v1.6.3 — picture_CopyPixels
             // → memmove → far=0 in libvlcs Decoder-Thread während

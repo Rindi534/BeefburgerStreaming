@@ -808,6 +808,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   ///     ffmpeg-kit-Extraction ankommt.
   static const int _kVirtualExternalSrtTrackId = -100;
 
+  // Virtual-Track-ID für "libvlc-Debug-Log anzeigen". Negativ damit's
+  // nicht mit echten libvlc-Track-IDs kollidiert.
+  static const int _kVirtualShowLogTrackId = -200;
+
   Future<void> _openSubtitleMenu(BuildContext context) async {
     _scheduleControlsHide();
     final hasExternal = _externalSubs.isNotEmpty;
@@ -819,12 +823,22 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           isCurrent: _externalSubsEnabled,
         ),
       ..._subtitleTracks,
+      // Diagnose-Eintrag — letzter im Menü.
+      const VlcTrack(
+        id: _kVirtualShowLogTrackId,
+        name: '📋 libvlc-Log anzeigen',
+        isCurrent: false,
+      ),
     ];
     await _showTrackMenu(
       context: context,
       title: 'Untertitel',
       tracks: tracks,
       onSelect: (id) async {
+        if (id == _kVirtualShowLogTrackId) {
+          await _showLibvlcLogDialog();
+          return;
+        }
         if (id == _kVirtualExternalSrtTrackId) {
           // Externe SRT toggeln. libvlc-Track gleichzeitig auf -1
           // damit kein doppelter Decoder-Pfad versucht zu rendern.
@@ -848,6 +862,70 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       title: 'Audiospur',
       tracks: _audioTracks,
       onSelect: (id) async => _setAudioTrack(id),
+    );
+  }
+
+  /// Zeigt das libvlc-interne Debug-Log in einem scrollbaren Dialog.
+  /// Wird vom Sub-Menü via Diagnose-Eintrag aufgerufen damit wir bei
+  /// SPU-Problemen sehen können was libvlc tatsächlich macht.
+  Future<void> _showLibvlcLogDialog() async {
+    final log = await _controller?.getLibvlcLog() ?? '(controller nil)';
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        insetPadding: const EdgeInsets.all(20),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'libvlc-Log',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  padding: const EdgeInsets.all(8),
+                  child: SingleChildScrollView(
+                    reverse: true,
+                    child: SelectableText(
+                      log.isEmpty ? '(log leer)' : log,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontFamily: 'Courier',
+                        fontSize: 10,
+                        height: 1.3,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
