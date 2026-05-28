@@ -153,16 +153,52 @@ static libvlc_instance_t *VLCExtractLibvlcInstance(void)
     NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
     if (!fh) return @"(no log file)";
     @try {
-        // Letzte 50 KB lesen
-        const unsigned long long kMaxBytes = 50 * 1024;
+        // Wir lesen DAS GANZE log (max 2 MB) und filtern dann die
+        // bekannten Spam-Patterns raus (no matching alpha blending,
+        // blending YUVA failed, no video blending modules matched,
+        // looking for video blending module). Was übrig bleibt sind
+        // die EINMALIGEN setup/state-Messages die wir eigentlich
+        // diagnostisch brauchen.
+        const unsigned long long kMaxBytes = 2 * 1024 * 1024;
         unsigned long long size = [fh seekToEndOfFile];
         unsigned long long start = (size > kMaxBytes) ? (size - kMaxBytes) : 0;
         [fh seekToFileOffset:start];
         NSData *data = [fh readDataToEndOfFile];
         [fh closeFile];
-        NSString *str = [[NSString alloc] initWithData:data
+        NSString *raw = [[NSString alloc] initWithData:data
                                               encoding:NSUTF8StringEncoding];
-        return str ?: @"(decode failure)";
+        if (!raw) return @"(decode failure)";
+
+        NSArray<NSString *> *lines = [raw componentsSeparatedByString:@"\n"];
+        NSMutableArray<NSString *> *kept = [NSMutableArray array];
+        NSString *spamA = @"no matching alpha blending routine";
+        NSString *spamB = @"blending YUVA";
+        NSString *spamC = @"no video blending modules matched";
+        NSString *spamD = @"looking for video blending module";
+        NSInteger droppedCount = 0;
+        for (NSString *line in lines) {
+            if ([line containsString:spamA] ||
+                [line containsString:spamB] ||
+                [line containsString:spamC] ||
+                [line containsString:spamD]) {
+                droppedCount++;
+                continue;
+            }
+            [kept addObject:line];
+        }
+        // Header mit der gefilterten Zahl, dann die ungefilterten lines.
+        NSMutableString *out = [NSMutableString string];
+        [out appendFormat:@"=== %ld spam lines filtered out ===\n",
+                         (long)droppedCount];
+        // Letzte ~50 KB des gefilterten Outputs damit der Dialog nicht
+        // überfordert wird wenn auch nach Filterung viel da ist.
+        NSString *joined = [kept componentsJoinedByString:@"\n"];
+        const NSUInteger kTailChars = 50 * 1024;
+        if (joined.length > kTailChars) {
+            joined = [joined substringFromIndex:joined.length - kTailChars];
+        }
+        [out appendString:joined];
+        return out;
     } @catch (NSException *ex) {
         return [NSString stringWithFormat:@"(read failure: %@)", ex.reason];
     }
