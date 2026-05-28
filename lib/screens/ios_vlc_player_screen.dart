@@ -836,6 +836,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       tracks: tracks,
       onSelect: (id) async {
         if (id == _kVirtualShowLogTrackId) {
+          // Sub-Menü ZUERST schließen, sonst poppt sein Auto-Close-
+          // Timer 220ms später den Log-Dialog statt das Menü.
+          // showLibvlcLogDialog wird async — wir warten kurz damit
+          // der Stack sauber ist bevor wir den Dialog pushen.
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
           await _showLibvlcLogDialog();
           return;
         }
