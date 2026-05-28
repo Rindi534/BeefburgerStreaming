@@ -118,15 +118,23 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.subRenderView.contentMode = .scaleAspectFit
 
         // VLCMediaPlayer mit player-level libvlc-options. Anders als
-        // media.addOption() (die nur an die Input-/Decoder-Pipeline
-        // propagieren) werden DIESE Options beim Modul-Init des Players
-        // gelesen — inkl. der vout-side freetype-Renderer-Konfig.
-        // Genau das brauchen wir für die Sub-Schriftgröße, die als
-        // Media-Option durch alle Iterationen ignoriert wurde.
+        // media.addOption() werden DIESE Options beim Modul-Init des
+        // Players gelesen — inkl. der vout-side freetype-Renderer-
+        // Konfig. v1.9.3 bestätigte: die Options greifen jetzt
+        // (User-Feedback: Subs winzig).
+        //
+        // Größen-Kalibration:
+        //   - freetype-fontsize ist absolut in Pixeln (vor dem
+        //     Layer-Scaling auf Display-Größe).
+        //   - 60 px → bei AVSampleBufferDisplayLayer-Scaling von
+        //     1080p → iPhone-Display (~390 px Breite, also ~5x
+        //     downscale) ergibt das ~12 px effektiv auf dem Screen.
+        //     Etwas größer als Apples Default aber lesbar.
+        //   - sub-text-scale UND freetype-rel-fontsize raus damit
+        //     nur EIN Pfad die Größe bestimmt und nicht mehrere
+        //     übereinander multiplizieren.
         let playerOptions: [String] = [
-            "--freetype-fontsize=20",
-            "--sub-text-scale=40",
-            "--freetype-rel-fontsize=40",
+            "--freetype-fontsize=60",
         ]
         self.mediaPlayer = VLCMediaPlayer(options: playerOptions)
 
