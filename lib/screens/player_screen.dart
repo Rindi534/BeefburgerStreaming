@@ -11,6 +11,7 @@ import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/export_service.dart';
 import '../services/fullscreen_service.dart';
+import '../services/log_service.dart';
 import '../services/thumbnail_service.dart';
 import 'settings_screen.dart';
 
@@ -586,83 +587,160 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return Icons.volume_up_rounded;
   }
 
+  /// Bumped on every fullscreen toggle so the diagnostic log lines
+  /// can be grouped per-event when the user sends the file.
+  int _fsToggleSeq = 0;
+
   Future<void> _toggleFullscreen() async {
+    final seq = ++_fsToggleSeq;
+    final t0 = DateTime.now();
+    final pos0 = _position;
+    final wasFs = _isFullscreen;
+    final wasPlaying = _isPlaying;
+    LogService.info(
+      '[fs#$seq] start wasFullscreen=$wasFs pos=${pos0.inMilliseconds}ms '
+      'playing=$wasPlaying buffering=$_isBuffering',
+    );
+
+    // ------------------------------------------------------------------
+    // Pre-emptive pause-toggle-play
+    // ------------------------------------------------------------------
+    // Reactive nudges (seek after the fact) only worked some of the time
+    // — F11 in particular freezes "fast jedes Mal" because Windows fires
+    // its own WM_SIZE / WM_SYSCOMMAND flurry while the libANGLE surface
+    // is being recreated, and mpv loses the texture binding. Reacting
+    // 500 ms later isn't enough — the renderer is already wedged.
+    //
+    // The reliable workaround is to NOT have the video output active
+    // during the resize: pause first, do the resize, settle for a beat,
+    // then resume. mpv re-arms its vo cleanly when play() is called
+    // against a freshly resized window. The user perceives a ~250 ms
+    // micro-pause, which is leagues better than a permanent freeze that
+    // requires another F-press to recover from.
+    if (wasPlaying) {
+      try {
+        await _player.pause();
+      } catch (_) {/* best-effort */}
+    }
+
     await FullscreenService.toggle();
+    final tAfterToggle = DateTime.now();
+    LogService.info(
+      '[fs#$seq] setFullScreen returned after '
+      '${tAfterToggle.difference(t0).inMilliseconds}ms',
+    );
+
     if (mounted) {
       setState(() => _isFullscreen = FullscreenService.isFullscreen);
     }
-    // ------------------------------------------------------------------
-    // Freeze mitigation
-    // ------------------------------------------------------------------
-    // Windows fullscreen toggling resizes the native window mid-frame.
-    // media_kit / mpv's libANGLE video texture occasionally fails to
-    // re-bind to the new surface size — the audio thread keeps running
-    // (mpv's audio output is independent of the video output) but the
-    // video stays frozen on the last frame. User-visible symptom: "Ton
-    // läuft weiter, Bild hängt".
-    //
-    // No clean libmpv API exists to force a render context refresh from
-    // Dart. The practical workaround that mpv issue trackers + media_kit
-    // discussions converge on: nudge the demuxer (a tiny seek to the
-    // current position). That forces mpv to push a fresh frame through
-    // the vo, which reattaches the texture to the new window size.
-    //
-    // We only do the nudge if the position has actually stalled — on a
-    // healthy toggle we don't want to introduce a visible micro-jump.
-    if (_isPlaying) {
-      _scheduleFullscreenFreezeCheck();
+
+    // Give Windows a beat to finish its resize flurry before we ask
+    // mpv to render the next frame. 150 ms is enough on every machine
+    // I tested; tunable if needed.
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    if (wasPlaying && mounted) {
+      try {
+        await _player.play();
+      } catch (_) {/* best-effort */}
+    }
+
+    // Belt-and-suspenders: even with the pre-emptive pause, if the
+    // freeze somehow still happens we schedule a multi-stage recovery
+    // + diagnostic checkpoints so the log captures it for analysis.
+    if (wasPlaying) {
+      _scheduleFullscreenFreezeCheck(seq, t0, pos0);
     }
   }
 
-  /// Two-stage recovery after a fullscreen toggle.
+  /// Three-stage recovery + diagnostic checkpoints after a fullscreen
+  /// toggle. Each stage only fires if the player still looks frozen at
+  /// that point — healthy toggles never hit any of them.
   ///
-  /// Stage 1 (500 ms): gentle nudge — a `seek(currentPos)`. Forces mpv
-  /// to push a fresh frame through the video output, which usually
-  /// reattaches the texture to the resized surface.
+  /// Diagnostic checkpoints at 200/600/1200/2000 ms capture the
+  /// position delta into the rotating app log. Look for `[fs#N]` lines
+  /// in `%APPDATA%\Roaming\com.example\beefburger_streaming\logs\
+  /// app.log` to reconstruct any reported freeze.
   ///
-  /// Stage 2 (1300 ms): if the gentle nudge didn't take, do a full
-  /// pause → seek → play cycle. This forces mpv to fully tear down
-  /// and rebuild the video output, which fixes the stubborn case where
-  /// the texture is in a wedged state libANGLE can't recover from
-  /// with just a frame push. The user perceives a tiny ~150 ms hitch
-  /// but that's vastly better than "video bleibt eingefroren".
-  ///
-  /// Observations on why F11 freezes more than F:
-  /// Both keys go through the same `_toggleFullscreen()`, but Windows
-  /// occasionally intercepts F11 for its own window-management heuristics
-  /// (browser-style fullscreen, accessibility overlays). Even when our
-  /// handler runs first, the OS still issues a parallel
-  /// `WM_SYSCOMMAND`/`WM_SIZE` flurry that compounds with our
-  /// `setFullScreen` call and makes the libANGLE surface-recreate path
-  /// far more likely to lose the texture. Hence the harder recovery
-  /// kicks in noticeably more often after F11 in practice.
-  void _scheduleFullscreenFreezeCheck() {
-    final positionAtStart = _position;
+  /// Stage 1 (700 ms): seek to current position. Cheap; usually
+  /// enough to push a fresh frame through mpv's vo and reattach
+  /// the texture.
+  /// Stage 2 (1500 ms): pause → seek → play. Forces mpv to fully
+  /// rebuild the vo.
+  /// Stage 3 (2800 ms): NUCLEAR — re-open the media at the saved
+  /// position. Costs ~1 s of buffering but recovers from cases where
+  /// the texture binding itself is permanently broken.
+  void _scheduleFullscreenFreezeCheck(
+      int seq, DateTime t0, Duration pos0) {
+    int posDeltaMs() => (_position - pos0).inMilliseconds;
+    void checkpoint(String label) {
+      if (!mounted) return;
+      final elapsed = DateTime.now().difference(t0).inMilliseconds;
+      LogService.info(
+        '[fs#$seq] checkpoint=$label t+${elapsed}ms posDelta=${posDeltaMs()}ms '
+        'playing=$_isPlaying buffering=$_isBuffering',
+      );
+    }
 
-    // Stage 1: gentle nudge.
-    Future.delayed(const Duration(milliseconds: 500), () async {
+    // Plain observation points.
+    Future.delayed(const Duration(milliseconds: 200),
+        () => checkpoint('200ms'));
+    Future.delayed(const Duration(milliseconds: 600),
+        () => checkpoint('600ms'));
+
+    // Stage 1: gentle nudge at 700 ms.
+    Future.delayed(const Duration(milliseconds: 700), () async {
       if (!mounted || !_isPlaying) return;
-      final delta = _position - positionAtStart;
-      if (delta.inMilliseconds >= 100) return; // healthy — bail
+      if (posDeltaMs() >= 200) return; // recovered already
+      LogService.warn('[fs#$seq] stage1 firing — position stuck at '
+          '${_position.inMilliseconds}ms');
       try {
         await _player.seek(_position);
-      } catch (_) {/* best-effort */}
+      } catch (e, st) {
+        LogService.error('[fs#$seq] stage1 seek failed',
+            error: e, stack: st);
+      }
     });
 
-    // Stage 2: aggressive recovery if stage 1 wasn't enough.
-    Future.delayed(const Duration(milliseconds: 1300), () async {
+    Future.delayed(const Duration(milliseconds: 1200),
+        () => checkpoint('1200ms'));
+
+    // Stage 2: pause → seek → play.
+    Future.delayed(const Duration(milliseconds: 1500), () async {
       if (!mounted || !_isPlaying) return;
-      final delta = _position - positionAtStart;
-      // 600 ms = "we've been giving you a chance for 1.3 s; if you've
-      // moved less than that, the renderer is definitely stuck".
-      if (delta.inMilliseconds >= 600) return; // recovered or never broke
+      if (posDeltaMs() >= 800) return; // recovered
+      LogService.warn('[fs#$seq] stage2 firing — pause→seek→play');
       try {
         await _player.pause();
-        await Future.delayed(const Duration(milliseconds: 60));
+        await Future.delayed(const Duration(milliseconds: 80));
         await _player.seek(_position);
-        await Future.delayed(const Duration(milliseconds: 60));
+        await Future.delayed(const Duration(milliseconds: 80));
         await _player.play();
-      } catch (_) {/* best-effort */}
+      } catch (e, st) {
+        LogService.error('[fs#$seq] stage2 failed', error: e, stack: st);
+      }
+    });
+
+    Future.delayed(const Duration(milliseconds: 2000),
+        () => checkpoint('2000ms'));
+
+    // Stage 3: nuclear — re-open media at the saved position.
+    Future.delayed(const Duration(milliseconds: 2800), () async {
+      if (!mounted || !_isPlaying) return;
+      if (posDeltaMs() >= 1500) return; // recovered
+      LogService.warn(
+          '[fs#$seq] stage3 NUCLEAR — reopening media at '
+          '${_position.inMilliseconds}ms');
+      final savePos = _position;
+      try {
+        await _player.open(Media(widget.filePath), play: false);
+        await _player.seek(savePos);
+        await _player.play();
+        LogService.info('[fs#$seq] stage3 reopen completed');
+      } catch (e, st) {
+        LogService.error('[fs#$seq] stage3 reopen failed',
+            error: e, stack: st);
+      }
     });
   }
 
