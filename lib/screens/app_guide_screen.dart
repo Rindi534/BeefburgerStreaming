@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// In-app guide covering every feature of the app. Paired with
+/// In-app guide covering every feature of the iOS app. Paired with
 /// [FolderConventionScreen] which handles the "how do I prepare the
 /// files" side of things. Both are reachable from Settings > Hilfe.
 class AppGuideScreen extends StatelessWidget {
@@ -27,40 +27,35 @@ class AppGuideScreen extends StatelessWidget {
             title: 'Startseite',
             description:
                 'Zentraler Einstieg mit Raster aller Filme und Serien. '
-                'Oben: Logo, globale Suchleiste, Aktualisieren- und '
+                'Oben: Logo, Suchleiste, Aktualisieren- und '
                 'Einstellungs-Button. Darunter — sobald du etwas '
                 'angefangen hast — die „Weiterschauen"-Leiste, danach '
                 'das vollständige Raster.',
             highlights: const [
               'Jede Kachel zeigt das Cover-Bild',
               'Fehlt ein Cover, wird ein Auto-Frame aus dem Video genutzt',
-              'Hover-Effekt: sanfter Zoom',
-              'Klick auf eine Kachel → Detail-Ansicht',
+              'Tipp auf eine Kachel → Detail-Ansicht',
+              'Wisch von oben nach unten über das Raster → aktualisieren',
             ],
           ),
           const SizedBox(height: 12),
           _featureCard(
             icon: Icons.search_rounded,
-            title: 'Globale Suchleiste',
+            title: 'Suchleiste',
             description:
-                'Im Kopfbereich der Startseite, zwischen Logo und den '
-                'rechten Buttons. Tippe los — es wird live gefiltert, '
-                'ein Dropdown mit den Treffern erscheint direkt darunter. '
-                'Gruppen: Filme, Serien, Folgen.',
+                'Im Kopfbereich der Startseite. Tippe los — es wird live '
+                'gefiltert, ein Dropdown mit den Treffern erscheint direkt '
+                'darunter. Gruppen: Filme, Serien, Folgen.',
             highlights: const [
-              'Film anklicken → startet direkt im Player',
-              'Serie anklicken → öffnet die Detail-Ansicht',
-              'Folge anklicken → spielt die Folge sofort — die '
+              'Film antippen → startet direkt im Player',
+              'Serie antippen → öffnet die Detail-Ansicht',
+              'Folge antippen → spielt die Folge sofort — die '
                   'nächste Folge wird automatisch angehängt und die '
                   'Position wird gemerkt',
               'Filme und Serien erscheinen mit ihrem Hochformat-Cover, '
-                  'Folgen mit einem Querformat-Vorschaubild — so '
-                  'erkennst du sofort, worauf du klickst',
+                  'Folgen mit einem Querformat-Vorschaubild',
               'Treffer am Wortanfang werden zuerst gezeigt',
-              'Gibst du einen Serientitel ein, stehen die Folgen '
-                  'dieser Serie oben (z. B. „Se" → erst Seinfeld-'
-                  'Folgen, dann alles andere mit „se")',
-              'Escape oder Klick außerhalb schließt das Dropdown',
+              'Tipp außerhalb oder die iOS-Tastatur schließen → Dropdown zu',
             ],
           ),
           const SizedBox(height: 12),
@@ -68,18 +63,14 @@ class AppGuideScreen extends StatelessWidget {
             icon: Icons.history_rounded,
             title: 'Weiterschauen-Leiste',
             description:
-                'Horizontale Reihe mit angefangenen Folgen/Filmen. '
+                'Horizontale Reihe mit angefangenen Folgen und Filmen. '
                 'Ab 90 % Fortschritt gilt etwas als „fertig" und '
                 'verschwindet automatisch aus der Leiste.',
             highlights: const [
-              'Mausrad-Scrollen über der Leiste',
-              'Maus-Drag: reinklicken und ziehen',
-              'Pfeil-Buttons links/rechts erscheinen bei Overflow, '
-                  'verschwinden wenn alles ins Bild passt',
-              'Federt sanft am Anfang/Ende, wenn du übers Rand '
-                  'weiterscrollst — rein visuelles Feedback',
+              'Horizontal wischen, um durchzublättern',
               'Fortschrittsbalken unter jeder Karte',
               'Bild: thumbnail.jpg bevorzugt (16:9), sonst banner/cover',
+              'Tipp auf eine Karte → spielt direkt an der letzten Position weiter',
             ],
           ),
           const SizedBox(height: 12),
@@ -93,11 +84,9 @@ class AppGuideScreen extends StatelessWidget {
                 '„Weiterschauen"-Button springt direkt dorthin zurück.',
             highlights: const [
               'Großes Kopfbild (banner → cover → thumbnail → Auto)',
-              'Staffel-Leiste: Mausrad, Maus-Drag oder Pfeil-Buttons',
-              'Staffel-Chips federn am Rand — gleiches Verhalten wie '
-                  'die Weiterschauen-Leiste',
-              'Klick auf Episode öffnet den Player mit letzter Position',
-              'Escape oder Pfeil oben links → zurück',
+              'Staffel-Leiste: horizontal wischen',
+              'Tipp auf Episode öffnet den Player mit letzter Position',
+              'Pfeil oben links → zurück',
             ],
           ),
 
@@ -110,15 +99,52 @@ class AppGuideScreen extends StatelessWidget {
             icon: Icons.play_circle_filled_rounded,
             title: 'Steuerung',
             description:
-                'Die Steuerleiste blendet sich nach ~3 Sek. ohne '
-                'Maus-Bewegung aus. Bei Maus-Bewegung ist sie sofort '
-                'wieder da. Position wird automatisch gespeichert.',
+                'Die Steuerleiste blendet sich nach ein paar Sekunden ohne '
+                'Berührung aus. Einmal tippen blendet sie sofort wieder ein. '
+                'Die Position wird automatisch gespeichert.',
             highlights: const [
-              'Leertaste oder Doppelklick: Pause/Play',
-              'Pfeil links/rechts: 10 Sek zurück/vor',
-              'Pfeil hoch/runter: Lautstärke ±5 %',
-              'M: stumm · F: Vollbild',
-              'Escape: zurück (Position wird gemerkt)',
+              'Einmal tippen: Steuerleiste ein/aus',
+              'Doppel-Tap: Pause / Abspielen',
+              'Doppel-Tap links/rechts: 10 Sek zurück/vor',
+              'Seekleiste antippen oder ziehen: Position wählen',
+              'Lautstärke/Helligkeit: über die normalen iOS-Tasten / das Kontrollzentrum',
+              'Pfeil oben links: zurück (Position wird gemerkt)',
+            ],
+          ),
+          const SizedBox(height: 12),
+          _featureCard(
+            icon: Icons.picture_in_picture_alt_rounded,
+            title: 'Bild-im-Bild (PiP)',
+            description:
+                'Der iOS-Player unterstützt vollständig die Picture-in-'
+                'Picture-Funktion von iOS. Du kannst das Video aus der '
+                'App in ein kleines, frei verschiebbares Fenster '
+                'auslagern und währenddessen Mails lesen, im Netz '
+                'surfen oder andere Apps benutzen.',
+            highlights: const [
+              'PiP-Button in der Steuerleiste → manuell starten',
+              'Home/Sperrtaste während der Wiedergabe → automatisch in PiP wechseln',
+              'PiP-Fenster: Tap-and-Hold → ziehen · Ecken anfassen → Größe',
+              'Im PiP-Fenster: Play/Pause, ±15 Sek und Vor/Zurück (nächste Folge)',
+              'Tipp auf das PiP-Fenster → zurück in die App',
+              'Am Ende der Folge startet im PiP automatisch die nächste',
+            ],
+          ),
+          const SizedBox(height: 12),
+          _featureCard(
+            icon: Icons.lock_clock_rounded,
+            title: 'Sperrbildschirm & Kontrollzentrum',
+            description:
+                'Während der Wiedergabe erscheint die Folge ganz normal '
+                'als „Wird wiedergegeben"-Karte auf dem Sperrbildschirm '
+                'und im iOS-Kontrollzentrum — mit Cover, Titel, '
+                'Fortschritt und Steuerung.',
+            highlights: const [
+              'Play / Pause direkt vom Sperrbildschirm',
+              '±15 Sekunden Skip-Buttons',
+              'Vor/Zurück-Tasten springen zur nächsten/vorherigen Folge',
+              'Fortschrittsbalken zum Scrubben',
+              'Funktioniert auch mit AirPods / Bluetooth-Kopfhörern',
             ],
           ),
           const SizedBox(height: 12),
@@ -126,14 +152,15 @@ class AppGuideScreen extends StatelessWidget {
             icon: Icons.subtitles_rounded,
             title: 'Untertitel',
             description:
-                'Externe .srt-Dateien (gleicher Name wie das Video) und '
-                'eingebettete Untertitel in .mkv werden automatisch '
-                'erkannt. Bei mehreren Spuren öffnet sich ein Auswahl-'
-                'Menü.',
+                'Eingebettete Untertitel in .mkv werden automatisch '
+                'erkannt — auch SSA/ASS und mehrsprachige Spuren. '
+                'Externe .srt-Dateien mit dem gleichen Namen wie das '
+                'Video werden zusätzlich angeboten.',
             highlights: const [
-              'Button im Player oder Taste C/S',
+              'Untertitel-Button im Player öffnet das Auswahl-Menü',
+              'Mehrere Spuren? Einfach antippen, sofortiger Wechsel',
+              'Auch deaktivierbar („Aus")',
               'Standard-Verhalten konfigurierbar in den Einstellungen',
-              'Unterstützt: .srt · .sub · .ass · .ssa · .vtt',
             ],
           ),
           const SizedBox(height: 12),
@@ -142,11 +169,11 @@ class AppGuideScreen extends StatelessWidget {
             title: 'Audio-Spuren',
             description:
                 'Bei Videos mit mehreren Tonspuren (z. B. Deutsch + '
-                'Englisch) erscheint automatisch das Musiknoten-Symbol '
-                'unten rechts im Player.',
+                'Englisch) erscheint das Musiknoten-Symbol in der '
+                'Steuerleiste. Tipp drauf → Sprache wählen.',
             highlights: const [
-              'Taste A: durch alle Spuren schalten',
               'Aktive Spur ist farbig markiert',
+              'Wechsel ohne Neustart der Wiedergabe',
             ],
           ),
           const SizedBox(height: 12),
@@ -156,42 +183,12 @@ class AppGuideScreen extends StatelessWidget {
             description:
                 'Am Ende einer Folge erscheint ein 10-Sekunden-Countdown '
                 'mit Vorschau der nächsten Episode aus dem gleichen '
-                'Staffel-Ordner.',
+                'Staffel-Ordner. Funktioniert auch im PiP-Modus.',
             highlights: const [
               '„Jetzt starten": überspringt Countdown',
               '„Abbrechen": Countdown stoppen',
               'Nächste Folge = nächstgrößere Episoden-Nummer im Ordner',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _featureCard(
-            icon: Icons.photo_camera_rounded,
-            title: 'Erweiterte Werkzeuge (Screenshot + Clip)',
-            description:
-                'Opt-in. Aktivieren unter Einstellungen > Wiedergabe > '
-                '„Erweiterte Werkzeuge". Dann erscheinen zusätzliche '
-                'Buttons + Tastenkürzel im Player.',
-            highlights: const [
-              'P: Screenshot des aktuellen Frames als PNG',
-              '1: Clip-Anfang markieren',
-              '2: Clip-Ende markieren + als MP4 speichern',
-              'Mindestens 0,5 Sek zwischen Anfang und Ende',
-              'Ziel: Export-Ordner in den Einstellungen (sonst Dokumente)',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _featureCard(
-            icon: Icons.preview_rounded,
-            title: 'Vorschaubilder in der Seekleiste',
-            description:
-                'Optional. Beim Hovern über der Seekbar zeigt die App '
-                'einen kleinen Frame der Zielposition. Muss erst '
-                'aktiviert werden.',
-            highlights: const [
-              'Einstellungen > Wiedergabe > „Vorschaubilder"',
-              'Erstellung läuft im Hintergrund (Balken auf der Startseite)',
-              '„Stopp"-Button bricht sauber ab, Fortschritt bleibt erhalten',
-              'Absturz-sicher: unfertige Ordner werden neu erkannt',
+              'Im PiP läuft die nächste Folge ohne weiteres Zutun weiter',
             ],
           ),
 
@@ -204,13 +201,12 @@ class AppGuideScreen extends StatelessWidget {
             icon: Icons.refresh_rounded,
             title: 'Bibliothek aktualisieren',
             description:
-                'Nach jeder Änderung in deinem Medien-Ordner (neuer '
-                'Film, neue Folge, umbenannte Datei, gelöschte Datei) '
-                'drückst du oben rechts auf das Aktualisieren-Symbol. '
-                'Die App vergleicht den Ordner mit ihrem letzten Stand '
-                'und zeigt dir in einem Dialog, was sich geändert hat. '
-                'Du bestätigst mit Haken, was davon übernommen werden '
-                'soll.',
+                'Nach jeder Änderung in deinem BeefburgerStreaming-Ordner '
+                '(neuer Film über die Dateien-App hinzugefügt, Folge '
+                'gelöscht, Datei umbenannt) tippst du oben rechts auf '
+                'das Aktualisieren-Symbol. Die App vergleicht den Ordner '
+                'mit ihrem letzten Stand und zeigt dir in einem Dialog, '
+                'was sich geändert hat.',
             highlights: const [
               '🟢 Neue Dateien: Haken setzen, damit direkt ein '
                   'Vorschaubild erzeugt wird',
@@ -228,14 +224,15 @@ class AppGuideScreen extends StatelessWidget {
             title: 'Wichtige Medien „merken"',
             description:
                 'Für jeden Film und jede Serie gibt es ein kleines '
-                'Schild-Symbol. Wenn du darauf klickst, merkt sich die '
-                'App diesen Eintrag. Das heißt: Selbst wenn du die '
-                'Datei irgendwann vom Laufwerk entfernst, bleibt das '
-                'Vorschaubild in der App erhalten und der Eintrag '
-                'rutscht ins Archiv statt einfach zu verschwinden.',
+                'Schild-Symbol. Tipp drauf, und die App merkt sich '
+                'diesen Eintrag. Das heißt: Selbst wenn du die Datei '
+                'irgendwann vom iPhone löschst (z. B. zum '
+                'Speicherplatz-Sparen), bleibt das Vorschaubild in '
+                'der App erhalten und der Eintrag rutscht ins Archiv '
+                'statt einfach zu verschwinden.',
             highlights: const [
-              'Sinnvoll für Lieblingsfilme oder -serien, die du ab '
-                  'und zu auf eine externe Platte auslagerst',
+              'Sinnvoll für Lieblingsfilme oder -serien, die du immer '
+                  'wieder mal zwischendurch vom iPhone räumst',
               'Schild aus + Datei weg → Eintrag wird ganz entfernt',
               'Schild an + Datei weg → Eintrag landet im Archiv',
               'Nichts an der Datei ändert sich — nur die App merkt '
@@ -248,15 +245,13 @@ class AppGuideScreen extends StatelessWidget {
             title: 'Archiv',
             description:
                 'Hier sammelt die App alle gemerkten Medien, deren '
-                'Datei gerade nicht erreichbar ist (z. B. weil die '
-                'externe Platte abgesteckt ist). Solange ein Eintrag '
-                'im Archiv liegt, bleibt sein Cover/Vorschaubild '
-                'erhalten. Steckst du die Platte wieder an und '
-                'aktualisierst die Bibliothek, taucht der Eintrag '
-                'automatisch wieder normal auf.',
+                'Datei gerade nicht im BeefburgerStreaming-Ordner liegt. '
+                'Solange ein Eintrag im Archiv liegt, bleibt sein '
+                'Cover/Vorschaubild erhalten. Lädst du die Datei wieder '
+                'in den Ordner und aktualisierst die Bibliothek, taucht '
+                'der Eintrag automatisch wieder normal auf.',
             highlights: const [
-              'Mülleimer-Symbol: endgültig aus der App entfernen '
-                  '(Originaldatei ist ohnehin schon weg)',
+              'Mülleimer-Symbol: endgültig aus der App entfernen',
               'Eintrag bleibt, bis du ihn selbst löschst oder die '
                   'Datei wieder auftaucht',
             ],
@@ -269,7 +264,7 @@ class AppGuideScreen extends StatelessWidget {
                 'Wenn ein Cover mal schlecht gewählt ist oder du '
                 'einfach ein neues Standbild haben willst: In den '
                 'Einstellungen gibt es eine Baum-Ansicht aller Medien. '
-                'Klick auf einen Eintrag markiert ihn zum Neu-Erzeugen. '
+                'Tipp auf einen Eintrag markiert ihn zum Neu-Erzeugen. '
                 'Beim nächsten „Bibliothek aktualisieren" fragt dich '
                 'die App dann, ob das neue Bild wirklich erstellt '
                 'werden soll.',
@@ -307,17 +302,10 @@ class AppGuideScreen extends StatelessWidget {
               'Anzeige der aktuellen Cache-Größe vor dem Löschen',
               'Benötigte Bilder werden beim nächsten Aktualisieren '
                   'wieder neu erzeugt',
-              'Nützlich z. B. wenn du viel Speicherplatz freimachen '
-                  'willst',
+              'Nützlich z. B. wenn du Speicherplatz auf dem iPhone '
+                  'freimachen willst',
             ],
           ),
-
-          const SizedBox(height: 28),
-
-          // ─────────────────────── Tastenkürzel ───────────────────────
-          _sectionTitle(context, 'Tastenkürzel (im Player)'),
-          const SizedBox(height: 12),
-          _shortcutsCard(),
 
           const SizedBox(height: 28),
           _sectionTitle(context, 'Gut zu wissen'),
@@ -325,8 +313,8 @@ class AppGuideScreen extends StatelessWidget {
           _tipCard(
             icon: Icons.lock_rounded,
             text:
-                'Alles bleibt lokal. Keine Uploads, kein Account, '
-                'kein Internet nötig.',
+                'Alles bleibt lokal auf deinem iPhone/iPad. Keine '
+                'Uploads, kein Account, kein Internet nötig.',
           ),
           const SizedBox(height: 10),
           _tipCard(
@@ -346,11 +334,18 @@ class AppGuideScreen extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           _tipCard(
-            icon: Icons.mouse_rounded,
+            icon: Icons.swipe_rounded,
             text:
-                'Horizontale Leisten lassen sich per Mausrad, Maus-Drag '
-                'oder Pfeil-Buttons bedienen. Die Pfeile erscheinen nur, '
-                'wenn es tatsächlich was zu scrollen gibt.',
+                'Horizontale Leisten (Weiterschauen, Staffeln) lassen '
+                'sich einfach mit dem Finger durchwischen.',
+          ),
+          const SizedBox(height: 10),
+          _tipCard(
+            icon: Icons.headphones_rounded,
+            text:
+                'Per AirPlay kannst du das Audio auf einen kompatiblen '
+                'Lautsprecher oder Apple TV streamen — die '
+                'Wiedergabe-Steuerung bleibt am iPhone.',
           ),
         ],
       ),
@@ -375,9 +370,10 @@ class AppGuideScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Komplette Funktionsübersicht der App. Für den Aufbau '
-              'deines Medien-Ordners siehe „Ordner-Konvention" (eine '
-              'Ebene höher in den Einstellungen).',
+              'Komplette Funktionsübersicht für die iPhone/iPad-App. '
+              'Wie du deine Videos aufs iPhone bekommst und den Ordner '
+              'aufbaust, steht unter „Ordner-Konvention" (eine Ebene '
+              'höher in den Einstellungen).',
               style: TextStyle(
                 color: AppTheme.textPrimary.withValues(alpha: 0.9),
                 fontSize: 14,
@@ -472,68 +468,6 @@ class AppGuideScreen extends StatelessWidget {
                     ],
                   ),
                 )),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _shortcutsCard() {
-    const rows = <List<String>>[
-      ['Leertaste', 'Pause / Abspielen'],
-      ['Doppelklick', 'Pause / Abspielen'],
-      ['← / →', '10 Sekunden zurück / vor'],
-      ['↑ / ↓', 'Lautstärke +5 % / −5 %'],
-      ['M', 'Stummschalten'],
-      ['F', 'Vollbild'],
-      ['C  (auch S)', 'Untertitel ein/aus'],
-      ['A', 'Nächste Audio-Spur'],
-      ['P', 'Screenshot (nur mit Erw. Werkzeugen)'],
-      ['1 / 2', 'Clip-Anfang / -Ende (nur mit Erw. Werkzeugen)'],
-      ['Escape', 'Zurück zur Übersicht'],
-    ];
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: [
-          for (int i = 0; i < rows.length; i++) ...[
-            if (i > 0)
-              Divider(
-                height: 16,
-                thickness: 1,
-                color: AppTheme.divider.withValues(alpha: 0.4),
-              ),
-            Row(
-              children: [
-                SizedBox(
-                  width: 120,
-                  child: Text(
-                    rows[i][0],
-                    style: const TextStyle(
-                      color: AppTheme.accent,
-                      fontFamily: 'Consolas, Courier New, monospace',
-                      fontFamilyFallback: ['Consolas', 'Courier New', 'monospace'],
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: Text(
-                    rows[i][1],
-                    style: const TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 13.5,
-                      height: 1.45,
-                    ),
-                  ),
-                ),
-              ],
-            ),
           ],
         ],
       ),
