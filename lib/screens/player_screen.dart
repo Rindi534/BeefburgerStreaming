@@ -591,6 +591,47 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (mounted) {
       setState(() => _isFullscreen = FullscreenService.isFullscreen);
     }
+    // ------------------------------------------------------------------
+    // Freeze mitigation
+    // ------------------------------------------------------------------
+    // Windows fullscreen toggling resizes the native window mid-frame.
+    // media_kit / mpv's libANGLE video texture occasionally fails to
+    // re-bind to the new surface size — the audio thread keeps running
+    // (mpv's audio output is independent of the video output) but the
+    // video stays frozen on the last frame. User-visible symptom: "Ton
+    // läuft weiter, Bild hängt".
+    //
+    // No clean libmpv API exists to force a render context refresh from
+    // Dart. The practical workaround that mpv issue trackers + media_kit
+    // discussions converge on: nudge the demuxer (a tiny seek to the
+    // current position). That forces mpv to push a fresh frame through
+    // the vo, which reattaches the texture to the new window size.
+    //
+    // We only do the nudge if the position has actually stalled — on a
+    // healthy toggle we don't want to introduce a visible micro-jump.
+    if (_isPlaying) {
+      _scheduleFullscreenFreezeCheck();
+    }
+  }
+
+  /// Schedules a one-shot check 700 ms after a fullscreen toggle. If
+  /// the playback position hasn't advanced by that point, we assume
+  /// the video output froze (see the comment in [_toggleFullscreen])
+  /// and force a refresh via `seek(currentPos)`. Cheap when no freeze
+  /// happened — the check sees position advancing and bails out.
+  void _scheduleFullscreenFreezeCheck() {
+    final positionBefore = _position;
+    Future.delayed(const Duration(milliseconds: 700), () async {
+      if (!mounted || !_isPlaying) return;
+      final delta = _position - positionBefore;
+      // 100 ms is well below "playing normally for 700 ms" but well
+      // above any noisy frame-counter wobble.
+      if (delta.inMilliseconds < 100) {
+        try {
+          await _player.seek(_position);
+        } catch (_) {/* best-effort — nothing we can recover from */}
+      }
+    });
   }
 
   Future<void> _stopAndGoBack() async {
@@ -634,19 +675,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             if (!_controlsVisible) _showControls();
           },
           child: GestureDetector(
+            // Single click anywhere on the video toggles play/pause
+            // (Netflix/YouTube-style) AND keeps the controls visible
+            // so the user gets immediate visual confirmation. Clicks
+            // on the actual control widgets (buttons, slider, dropdown
+            // overlays) consume the event before it reaches here, so
+            // pressing e.g. Fullscreen does NOT also pause playback.
+            //
+            // NOTE: no `onDoubleTap` — adding one would force Flutter
+            // to delay onTap by ~300 ms to disambiguate, which felt
+            // sluggish. Space + the big round button still toggle
+            // playback for users who prefer those.
             onTap: () {
-              if (_controlsVisible) {
-                setState(() => _controlsVisible = false);
-              } else {
-                _showControls();
-              }
-            },
-            onDoubleTap: () {
               if (_isPlaying) {
                 _player.pause();
               } else {
                 _player.play();
               }
+              _showControls();
             },
             child: Stack(
               fit: StackFit.expand,
@@ -833,28 +879,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     },
                   ),
                   const SizedBox(width: 32),
-                  // Play/Pause
-                  GestureDetector(
-                    onTap: () {
-                      if (_isPlaying) {
-                        _player.pause();
-                      } else {
-                        _player.play();
-                      }
-                      _startHideTimer();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: AppTheme.accent.withValues(alpha: 0.9),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        _isPlaying
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 40,
+                  // Play/Pause — wrapped in a hover-scaling helper so
+                  // the user gets subtle "this is clickable" feedback
+                  // when the cursor lands on it (gentle scale-up +
+                  // brighter accent). Cheap visual cue, no layout
+                  // shift on neighbouring widgets.
+                  _HoverScale(
+                    child: GestureDetector(
+                      onTap: () {
+                        if (_isPlaying) {
+                          _player.pause();
+                        } else {
+                          _player.play();
+                        }
+                        _startHideTimer();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppTheme.accent.withValues(alpha: 0.9),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          _isPlaying
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
+                          color: Colors.white,
+                          size: 40,
+                        ),
                       ),
                     ),
                   ),
@@ -1634,7 +1686,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         if (isRepeat) break;
         _cycleAudioTrack();
         break;
+      // F or F11: toggle fullscreen. F11 added so users with the
+      // OS-wide "F11 = fullscreen" muscle memory don't have to relearn
+      // — both keys are equivalent.
       case LogicalKeyboardKey.keyF:
+      case LogicalKeyboardKey.f11:
         if (isRepeat) break;
         _toggleFullscreen();
         break;
@@ -2024,8 +2080,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    Icon(_volumeIcon,
-                        color: AppTheme.textSecondary, size: 18),
+                    // Bottom speaker icon — mirrors the toolbar mute
+                    // button so a click here toggles mute too. The
+                    // icon glyph already tracks volume / mute state
+                    // via [_volumeIcon], so visual confirmation comes
+                    // for free. Round InkWell so the hit area matches
+                    // the icon shape and doesn't overlap the slider.
+                    InkWell(
+                      onTap: _toggleMute,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(
+                          _volumeIcon,
+                          color: _isMuted
+                              ? AppTheme.accent
+                              : AppTheme.textSecondary,
+                          size: 18,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
                 ),
@@ -2303,6 +2377,54 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           ],
         ),
         duration: const Duration(seconds: 8),
+      ),
+    );
+  }
+}
+
+/// Small hover-feedback wrapper: gently scales its child up when the
+/// mouse enters, and adds a soft accent-colored glow. Used on the big
+/// round Play/Pause button so users get a "this is clickable" cue
+/// without an explicit pointer cursor change (which we can't do
+/// reliably across the whole video surface). Pure cosmetic — pointer
+/// events fall straight through to the child.
+class _HoverScale extends StatefulWidget {
+  final Widget child;
+  const _HoverScale({required this.child});
+
+  @override
+  State<_HoverScale> createState() => _HoverScaleState();
+}
+
+class _HoverScaleState extends State<_HoverScale> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: AnimatedScale(
+        scale: _hover ? 1.08 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: _hover
+                ? [
+                    BoxShadow(
+                      color: AppTheme.accent.withValues(alpha: 0.45),
+                      blurRadius: 18,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : const [],
+          ),
+          child: widget.child,
+        ),
       ),
     );
   }

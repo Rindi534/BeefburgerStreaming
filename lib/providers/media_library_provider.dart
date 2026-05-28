@@ -760,6 +760,18 @@ class MediaLibraryNotifier extends StateNotifier<MediaLibraryState> {
     }
   }
 
+  /// Called after the *entire* thumbnail cache has been purged from
+  /// disk (Settings → "Vorschaubild-Cache leeren"). Flushes the
+  /// in-memory `pathsWithCache` set so the per-item reset tree and the
+  /// keep-flag list immediately reflect "nothing cached anywhere"
+  /// instead of still showing every former entry. Without this the
+  /// menus kept rendering archived entries the user just deleted —
+  /// the exact "ich hab geleert, warum steht das noch da" report.
+  void notifyAllCachesCleared() {
+    if (state.pathsWithCache.isEmpty) return;
+    state = state.copyWith(pathsWithCache: const <String>{});
+  }
+
   MediaItem? getById(String id) {
     try {
       return state.items.firstWhere((i) => i.id == id);

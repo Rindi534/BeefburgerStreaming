@@ -650,6 +650,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onPressed: () async {
               Navigator.pop(ctx);
               await ThumbnailService.instance.clearCache();
+              // Tell the library state the cache is now empty so the
+              // "Für Behaltung geflagt" list and the reset tree update
+              // immediately — previously they kept showing stale
+              // entries until the next full library refresh.
+              ref
+                  .read(mediaLibraryProvider.notifier)
+                  .notifyAllCachesCleared();
               if (mounted) _refreshCacheSize();
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(

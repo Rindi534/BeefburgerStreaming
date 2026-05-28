@@ -58,11 +58,30 @@ class _KeepFlagsExpansion extends ConsumerWidget {
     final library = ref.watch(mediaLibraryProvider);
     final history = ref.watch(mediaHistoryProvider);
 
+    // Only show items that ACTUALLY have at least one cached
+    // thumbnail. The keep-flag controls whether the cache survives
+    // orphan cleanup — so it's nonsense to offer a flag for an item
+    // whose cache is empty in the first place. After "Cache leeren"
+    // this list correctly empties out instead of dangling former
+    // entries the user already wiped.
+    final cached = library.pathsWithCache;
+    bool hasAnyCache(MediaItem item) {
+      if (item.type == MediaType.movie) {
+        return item.movieFilePath != null &&
+            cached.contains(item.movieFilePath);
+      }
+      return item.allEpisodes.any((e) => cached.contains(e.filePath));
+    }
+
     final currentIds = {for (final i in library.items) i.id};
-    final current = [...library.items]
-      ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    final current = [
+      for (final i in library.items)
+        if (hasAnyCache(i)) i,
+    ]..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     final archive = history
-        .where((h) => !currentIds.contains(h.mediaId))
+        .where((h) =>
+            !currentIds.contains(h.mediaId) &&
+            h.allVideoPaths.any(cached.contains))
         .toList()
       ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
 
@@ -82,15 +101,17 @@ class _KeepFlagsExpansion extends ConsumerWidget {
           ),
         ),
         subtitle: const Text(
-          'Die Flag entscheidet — geflaggte Medien überleben jede Aktualisierung, '
-          'ungeflaggte werden aufgeräumt sobald die Dateien weg sind.',
+          'Nur Medien mit vorhandenen Vorschaubildern können geflaggt werden. '
+          'Geflaggte Medien überleben jede Aktualisierung, ungeflaggte werden '
+          'aufgeräumt sobald die Dateien weg sind.',
           style: TextStyle(color: AppTheme.textMuted, fontSize: 13),
         ),
         children: [
           const _BulkActionsRow(),
           _Subheader(title: 'Aktuelle Medien (${current.length})'),
           if (current.isEmpty)
-            const _EmptyHint('Keine Medien im Ordner'),
+            const _EmptyHint(
+                'Keine Medien mit Vorschaubildern — Cache wurde entweder geleert oder noch nicht erzeugt'),
           ..._withDividers([
             for (final item in current)
               _CurrentItemFlagRow(item: item, history: history),
@@ -99,7 +120,7 @@ class _KeepFlagsExpansion extends ConsumerWidget {
           _Subheader(title: 'Archiv (${archive.length})'),
           if (archive.isEmpty)
             const _EmptyHint(
-                'Keine archivierten Einträge — bisher nur aktuelle Medien bekannt'),
+                'Keine archivierten Einträge mit Vorschaubildern'),
           ..._withDividers([
             for (final entry in archive) _ArchiveItemRow(entry: entry),
           ]),
