@@ -68,6 +68,15 @@ class IOSVLCPlayerController {
   final _subDebugCtrl = StreamController<String>.broadcast();
   Stream<String> get subDebugStream => _subDebugCtrl.stream;
 
+  // Lockscreen-Remote-Commands. iOS feuert das wenn der User
+  // im Sperrbildschirm den Next-/Previous-Track-Button drückt
+  // (oder via Headphones / CarPlay). Player-Screen hört darauf
+  // und triggert die Folgen-Navigation.
+  final _remoteNextCtrl = StreamController<void>.broadcast();
+  Stream<void> get remoteNextStream => _remoteNextCtrl.stream;
+  final _remotePrevCtrl = StreamController<void>.broadcast();
+  Stream<void> get remotePrevStream => _remotePrevCtrl.stream;
+
   Duration get position => _position;
   Duration get duration => _duration;
   bool get isPlaying => _playing;
@@ -139,6 +148,12 @@ class IOSVLCPlayerController {
         final trace = raw['trace'] as String? ?? '(empty)';
         _subDebugCtrl.add('SKIP: $trace');
         break;
+      case 'remoteNextTrack':
+        _remoteNextCtrl.add(null);
+        break;
+      case 'remotePreviousTrack':
+        _remotePrevCtrl.add(null);
+        break;
     }
   }
 
@@ -207,6 +222,22 @@ class IOSVLCPlayerController {
     final s = await _methods.invokeMethod<String>('getLibvlcLog');
     return s ?? '';
   }
+
+  /// Setzt die iOS-Lockscreen/Control-Center-Now-Playing-Karte.
+  /// title = Episodenname, artist = Serien-/Filmname, artworkPath =
+  /// lokaler Pfad zu cover.jpg, duration = Gesamtlänge.
+  Future<void> setNowPlayingInfo({
+    required String title,
+    String? artist,
+    String? artworkPath,
+    Duration? duration,
+  }) =>
+      _methods.invokeMethod('setNowPlayingInfo', {
+        'title': title,
+        if (artist != null) 'artist': artist,
+        if (artworkPath != null) 'artworkPath': artworkPath,
+        'duration': (duration?.inMilliseconds ?? 0) / 1000.0,
+      });
 
   List<VlcTrack> _decodeTracks(List<dynamic>? raw) {
     if (raw == null) return const [];

@@ -82,6 +82,7 @@ class PlayerScreen extends StatelessWidget {
           title: title,
           episodeTitle: episodeTitle,
           mediaId: mediaId,
+          coverImagePath: coverImagePath,
           subtitlePath: subtitlePath,
           nextEpisodeFilePath: nextEpisodeFilePath,
           nextEpisodeTitle: nextEpisodeTitle,

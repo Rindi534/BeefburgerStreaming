@@ -31,6 +31,7 @@ class IOSVLCPlayerScreen extends ConsumerStatefulWidget {
   final String title;
   final String? episodeTitle;
   final String? mediaId;
+  final String? coverImagePath;
   final String? subtitlePath;
   final String? nextEpisodeFilePath;
   final String? nextEpisodeTitle;
@@ -45,6 +46,7 @@ class IOSVLCPlayerScreen extends ConsumerStatefulWidget {
     required this.title,
     this.episodeTitle,
     this.mediaId,
+    this.coverImagePath,
     this.subtitlePath,
     this.nextEpisodeFilePath,
     this.nextEpisodeTitle,
@@ -299,8 +301,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       _durationNotifier.value = dur;
       // Dauer kommt erst nach "playing"-State aus VLC — guter Moment
       // um Audio- und Untertitel-Spuren zu enumerieren (der Decoder
-      // hat bis dahin alle Streams gesehen).
+      // hat bis dahin alle Streams gesehen). Und um die iOS-
+      // Lockscreen-Karte zu setzen jetzt da wir die Gesamtdauer
+      // kennen.
       _refreshTracks();
+      _pushNowPlayingInfo();
     });
 
     _pipActiveSub = ctrl.pipActiveStream.listen((active) {
@@ -312,6 +317,29 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       if (!mounted) return;
       setState(() => _pipAvailable = avail);
     });
+
+    // Lockscreen-Remote-Buttons: Next- und Previous-Track. Mapen
+    // auf Episodenwechsel via die existierende Auto-Next-Logik.
+    ctrl.remoteNextStream.listen((_) {
+      if (!mounted) return;
+      _completionHandled = false;
+      _playNextEpisode();
+    });
+  }
+
+  /// Pusht Titel/Cover/Dauer der aktuellen Folge an die iOS-
+  /// Lockscreen-Now-Playing-Karte. Wird beim duration-Event
+  /// (= sobald libvlc die Gesamtlänge kennt) gerufen und nach
+  /// jedem Episodenwechsel.
+  Future<void> _pushNowPlayingInfo() async {
+    final ctrl = _controller;
+    if (ctrl == null) return;
+    await ctrl.setNowPlayingInfo(
+      title: _currentEpisodeTitle ?? widget.title,
+      artist: widget.title,
+      artworkPath: widget.coverImagePath,
+      duration: _duration > Duration.zero ? _duration : null,
+    );
   }
 
   /// Orientation zurück auf Portrait-Lock (App-global). Muss VOR

@@ -84,6 +84,7 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
     // NativePlayerPlugin. Ohne Drosselung fluten wir den Dart-
     // EventChannel mit ~30 Pro-Sekunde-Updates.
     private var lastPositionEmit: TimeInterval = 0
+    fileprivate var lastNowPlayingUpdate: TimeInterval = 0
 
     // Wir merken uns die angefragte Resume-Position bis zum Zeitpunkt
     // an dem VLC bereit ist zu springen. VLCMediaPlayer akzeptiert
@@ -283,7 +284,7 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // gefühlt "zu groß für iPhone-Display". Bei 24 wird's 1080p/24
         // = ~45px — vergleichbar mit Netflix-Standard, lesbar aber
         // unaufdringlich.
-        media.addOption(":freetype-rel-fontsize=24")
+        media.addOption(":freetype-rel-fontsize=30")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
@@ -452,6 +453,32 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             // Logs an Dart zurück damit wir das in der UI anzeigen
             // können.
             result(VLCLibvlcLogger.readLogTail())
+        case "setNowPlayingInfo":
+            // Lockscreen-/Control-Center-Karte aktivieren mit dem
+            // aktuellen Episoden-Titel, Cover etc. Wird von Dart
+            // gerufen sobald wir den richtigen Titel und Cover-Pfad
+            // wissen (etwa nach _onReady).
+            if let args = call.arguments as? [String: Any] {
+                let title = args["title"] as? String ?? "Wiedergabe"
+                let artist = args["artist"] as? String
+                let artworkPath = args["artworkPath"] as? String
+                let duration = (args["duration"] as? Double) ?? 0
+                NowPlayingHelper.shared.configure(
+                    player: mediaPlayer,
+                    title: title,
+                    artist: artist,
+                    artworkPath: artworkPath,
+                    duration: duration
+                )
+                // Routet Lockscreen-Next-/Prev-Track-Buttons an Dart.
+                NowPlayingHelper.shared.onNextTrack = { [weak self] in
+                    self?.eventSink.send(["event": "remoteNextTrack"])
+                }
+                NowPlayingHelper.shared.onPreviousTrack = { [weak self] in
+                    self?.eventSink.send(["event": "remotePreviousTrack"])
+                }
+            }
+            result(nil)
         case "dispose":
             // Reihenfolge KRITISCH (Crash-Bug v1.6.3 — picture_CopyPixels
             // → memmove → far=0 in libvlcs Decoder-Thread während
@@ -466,6 +493,7 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             //      released → CVPixelBufferPool freigegeben. Da libvlc
             //      durch ist, ist's sicher die Memory rauszuwerfen.
             mediaPlayer.delegate = nil
+            NowPlayingHelper.shared.clear()
             if #available(iOS 15.0, *),
                let coord = pipCoordinator as? VLCPiPCoordinator {
                 coord.detach()
@@ -519,6 +547,7 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // Erklärung dort. Kurzform: delegate=nil → callbacks=NULL →
         // stop → erst dann den Coord/Pump released.
         mediaPlayer.delegate = nil
+        NowPlayingHelper.shared.clear()
         if #available(iOS 15.0, *),
            let coord = pipCoordinator as? VLCPiPCoordinator {
             coord.detach()
@@ -592,8 +621,19 @@ extension VLCPlayerView: VLCMediaPlayerDelegate {
                 "event": "position",
                 "seconds": Double(ms) / 1000.0,
             ])
+            // Lockscreen-Karte mit aktueller Position updaten —
+            // Apple ratet dazu nur sparsam zu updaten (Now-Playing
+            // ist nicht für 60 Hz designed). Wir machen es alle ~250ms
+            // statt jedes Position-Event.
+            if now - lastNowPlayingUpdate >= 0.25 {
+                lastNowPlayingUpdate = now
+                NowPlayingHelper.shared.updateState(
+                    elapsed: Double(ms) / 1000.0,
+                    isPlaying: mediaPlayer.isPlaying)
+            }
         }
     }
+
 }
 
 // MARK: - Event sink proxy
