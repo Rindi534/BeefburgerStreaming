@@ -8,8 +8,10 @@
 
 #import "VLCLibvlcLogger.h"
 #import <MobileVLCKit/MobileVLCKit.h>
+#import <pthread.h>
 #import <stdarg.h>
 #import <stdio.h>
+#import <time.h>
 
 // libvlc-Forward-Decls.
 typedef struct libvlc_instance_t libvlc_instance_t;
