@@ -614,23 +614,55 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
   }
 
-  /// Schedules a one-shot check 700 ms after a fullscreen toggle. If
-  /// the playback position hasn't advanced by that point, we assume
-  /// the video output froze (see the comment in [_toggleFullscreen])
-  /// and force a refresh via `seek(currentPos)`. Cheap when no freeze
-  /// happened — the check sees position advancing and bails out.
+  /// Two-stage recovery after a fullscreen toggle.
+  ///
+  /// Stage 1 (500 ms): gentle nudge — a `seek(currentPos)`. Forces mpv
+  /// to push a fresh frame through the video output, which usually
+  /// reattaches the texture to the resized surface.
+  ///
+  /// Stage 2 (1300 ms): if the gentle nudge didn't take, do a full
+  /// pause → seek → play cycle. This forces mpv to fully tear down
+  /// and rebuild the video output, which fixes the stubborn case where
+  /// the texture is in a wedged state libANGLE can't recover from
+  /// with just a frame push. The user perceives a tiny ~150 ms hitch
+  /// but that's vastly better than "video bleibt eingefroren".
+  ///
+  /// Observations on why F11 freezes more than F:
+  /// Both keys go through the same `_toggleFullscreen()`, but Windows
+  /// occasionally intercepts F11 for its own window-management heuristics
+  /// (browser-style fullscreen, accessibility overlays). Even when our
+  /// handler runs first, the OS still issues a parallel
+  /// `WM_SYSCOMMAND`/`WM_SIZE` flurry that compounds with our
+  /// `setFullScreen` call and makes the libANGLE surface-recreate path
+  /// far more likely to lose the texture. Hence the harder recovery
+  /// kicks in noticeably more often after F11 in practice.
   void _scheduleFullscreenFreezeCheck() {
-    final positionBefore = _position;
-    Future.delayed(const Duration(milliseconds: 700), () async {
+    final positionAtStart = _position;
+
+    // Stage 1: gentle nudge.
+    Future.delayed(const Duration(milliseconds: 500), () async {
       if (!mounted || !_isPlaying) return;
-      final delta = _position - positionBefore;
-      // 100 ms is well below "playing normally for 700 ms" but well
-      // above any noisy frame-counter wobble.
-      if (delta.inMilliseconds < 100) {
-        try {
-          await _player.seek(_position);
-        } catch (_) {/* best-effort — nothing we can recover from */}
-      }
+      final delta = _position - positionAtStart;
+      if (delta.inMilliseconds >= 100) return; // healthy — bail
+      try {
+        await _player.seek(_position);
+      } catch (_) {/* best-effort */}
+    });
+
+    // Stage 2: aggressive recovery if stage 1 wasn't enough.
+    Future.delayed(const Duration(milliseconds: 1300), () async {
+      if (!mounted || !_isPlaying) return;
+      final delta = _position - positionAtStart;
+      // 600 ms = "we've been giving you a chance for 1.3 s; if you've
+      // moved less than that, the renderer is definitely stuck".
+      if (delta.inMilliseconds >= 600) return; // recovered or never broke
+      try {
+        await _player.pause();
+        await Future.delayed(const Duration(milliseconds: 60));
+        await _player.seek(_position);
+        await Future.delayed(const Duration(milliseconds: 60));
+        await _player.play();
+      } catch (_) {/* best-effort */}
     });
   }
 
@@ -2091,11 +2123,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       borderRadius: BorderRadius.circular(20),
                       child: Padding(
                         padding: const EdgeInsets.all(4),
+                        // Same colour in both states — the icon glyph
+                        // already changes (volume_up ↔ volume_off) to
+                        // reflect the mute state.
                         child: Icon(
                           _volumeIcon,
-                          color: _isMuted
-                              ? AppTheme.accent
-                              : AppTheme.textSecondary,
+                          color: AppTheme.textSecondary,
                           size: 18,
                         ),
                       ),
@@ -2112,8 +2145,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           onExit: (_) => _scheduleVolumeHide(),
           child: IconButton(
             icon: Icon(
+              // Keep the colour stable in both states — the muted
+              // glyph itself (durchgestrichener Lautsprecher via
+              // [_volumeIcon]) is the visual cue. Accent-red felt
+              // alarm-y and stuck out against the rest of the
+              // controls (user feedback v1.5.34).
               _volumeIcon,
-              color: _isMuted ? AppTheme.accent : AppTheme.textSecondary,
+              color: AppTheme.textSecondary,
               size: 24,
             ),
             onPressed: _toggleMute,
@@ -2401,30 +2439,18 @@ class _HoverScaleState extends State<_HoverScale> {
 
   @override
   Widget build(BuildContext context) {
+    // Pure scale tween — no shadow, no glow, no colour change. Matches
+    // the rest of the app's "quiet" hover language (cards do the same
+    // tiny zoom). Earlier glow version was rejected as too loud.
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: AnimatedScale(
-        scale: _hover ? 1.08 : 1.0,
+        scale: _hover ? 1.05 : 1.0,
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOut,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            boxShadow: _hover
-                ? [
-                    BoxShadow(
-                      color: AppTheme.accent.withValues(alpha: 0.45),
-                      blurRadius: 18,
-                      spreadRadius: 2,
-                    ),
-                  ]
-                : const [],
-          ),
-          child: widget.child,
-        ),
+        child: widget.child,
       ),
     );
   }
