@@ -279,18 +279,19 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // Trade-off: HEVC Software-Decoding ist langsamer als Hardware
         // (auf A12+ aber problemlos). Wert es für Subs.
         media.addOption(":codec=avcodec")
-        // Subtitle-Größe dezenter machen. Erst v1.8.8 mit
-        // `:freetype-rel-fontsize=30` probiert — kein sichtbarer
-        // Effekt (User-Feedback). Möglicherweise ignoriert
-        // MobileVLCKits libvlc-Build diese Option oder die
-        // freetype-Variante hat einen anderen Defaultpfad.
-        // Stattdessen `:sub-text-scale` — direkter Prozent-
-        // Multiplikator auf die finale Schriftgröße. 60 = 60 %
-        // der Default-Größe. Plus rel-fontsize parallel
-        // hochsetzen falls der eine Pfad zieht, der andere
-        // nicht.
-        media.addOption(":sub-text-scale=60")
-        media.addOption(":freetype-rel-fontsize=40")
+        // Subtitle-Größe — sub-text-scale=60 + rel-fontsize=40
+        // hatten beide keinen Effekt im User-Test. MobileVLCKits
+        // libvlc-Build ignoriert die offenbar still.
+        //
+        // Diesmal mit `:freetype-fontsize=N` (absoluter Pixel-Wert
+        // statt Verhältnis) UND `:sub-text-scale=40` (noch deutlich
+        // niedriger). Plus `:ass-default-font-size` für embedded
+        // ASS-Subs. Falls libvlc auch DAS ignoriert, ist's wirklich
+        // hardcoded und ich muss einen anderen Pfad bauen
+        // (zb subtitle delegate selbst rendern).
+        media.addOption(":freetype-fontsize=20")
+        media.addOption(":sub-text-scale=40")
+        media.addOption(":ass-default-font-size=20")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
