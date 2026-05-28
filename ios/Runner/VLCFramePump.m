@@ -345,14 +345,23 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     // _formatDesc wird nicht mehr gecached — bauen es pro Frame
     // via CMVideoFormatDescriptionCreateForImageBuffer auf.
 
-    // NV12 = 4:2:0 biplanar, video-range (limited 16-235 für Y,
-    // 16-240 für CbCr). Das ist was libvlc bei den meisten Codecs
-    // (h264, h265) nativ ausspuckt. Full-range gibt's auch
-    // (BiPlanarFullRange) — manche Streams sind so encoded —
-    // aber video-range ist der dominante Default.
+    // BGRA = 32-bit packed, single-plane.
+    //
+    // Wir hatten vorher NV12 (biplanar YUV) für native Decoder-Output
+    // ohne chroma conversion. Aber: libvlcs interne SPU-Pipeline
+    // rendert Subtitles als YUVA (YUV mit Alpha) und versucht sie in
+    // unseren Vout-Buffer zu blenden. MobileVLCKits libvlc-Build
+    // hat KEINE YUVA→NV12-Blending-Routine — Subs wurden silent
+    // gedroppt mit "no matching alpha blending routine (chroma:
+    // YUVA -> CVPN)" Errors im libvlc-Log.
+    //
+    // BGRA (= libvlcs RV32) HAT einen YUVA→RV32-Blender, also
+    // werden Subs hier sauber composited. Cost: libvlc macht jetzt
+    // intern eine chroma-conversion YUV→BGRA (swscale). Auf modernen
+    // iPhones völlig vernachlässigbar.
     NSDictionary *pixelBufferAttrs = @{
         (id)kCVPixelBufferPixelFormatTypeKey:
-            @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            @(kCVPixelFormatType_32BGRA),
         (id)kCVPixelBufferWidthKey: @(width),
         (id)kCVPixelBufferHeightKey: @(height),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
@@ -376,6 +385,9 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     // alignt auf 16/64 byte boundaries je nach Hardware) — wir
     // melden libvlc diese realen pitches zurück, sonst schreibt
     // libvlc mit der falschen Stride und das Bild ist verzerrt.
+    // BGRA hat nur EINE Plane — die alten _pitchUV/_linesUV-ivars
+    // bleiben unbenutzt (= 0) damit wir den existierenden Code
+    // strukturell minimal anfassen müssen.
     CVPixelBufferRef probe = NULL;
     res = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
                                               _pool, &probe);
@@ -383,22 +395,18 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         NSLog(@"[VLCFramePump] Probe-buffer create FAILED: %d", res);
         return NO;
     }
-    _pitchY  = CVPixelBufferGetBytesPerRowOfPlane(probe, 0);
-    _pitchUV = CVPixelBufferGetBytesPerRowOfPlane(probe, 1);
-    // ECHTE Plane-Heights aus dem Pool. Wenn der Pool intern für
-    // Hardware-Alignment ein paar Extra-Rows alloziert (typisch +8
-    // bis +16 für SIMD-Lanes), schreibt libvlc nur die ersten
-    // *height/h_chroma Zeilen — der Rest bleibt uninitialisiert
-    // und rendert als grüner Streifen unten am Bild.
-    _linesY  = CVPixelBufferGetHeightOfPlane(probe, 0);
-    _linesUV = CVPixelBufferGetHeightOfPlane(probe, 1);
+    // Bei single-plane BGRA: BytesPerRow direkt am Buffer (nicht via
+    // GetBytesPerRowOfPlane — das gibt es bei single-plane nicht).
+    _pitchY  = CVPixelBufferGetBytesPerRow(probe);
+    _pitchUV = 0;
+    _linesY  = CVPixelBufferGetHeight(probe);
+    _linesUV = 0;
     CVPixelBufferRelease(probe);
 
     _width = width;
     _height = height;
-    NSLog(@"[VLCFramePump] pool ready (NV12) %dx%d "
-          @"pitchY=%zu pitchUV=%zu linesY=%zu linesUV=%zu",
-          width, height, _pitchY, _pitchUV, _linesY, _linesUV);
+    NSLog(@"[VLCFramePump] pool ready (BGRA) %dx%d pitch=%zu lines=%zu",
+          width, height, _pitchY, _linesY);
 
     // Diagnose-Snackbar Trigger — Format-Werte gehen an Plugin/Dart
     // damit ich am iPhone die echten Zahlen sehe statt zu raten.
@@ -563,7 +571,7 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
         }
         NSDictionary *attrs = @{
             (id)kCVPixelBufferPixelFormatTypeKey:
-                @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                @(kCVPixelFormatType_32BGRA),
             (id)kCVPixelBufferWidthKey: @(dW),
             (id)kCVPixelBufferHeightKey: @(dH),
             (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
@@ -593,34 +601,21 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
     CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
     CVPixelBufferLockBaseAddress(dst, 0);
 
-    // Y-Plane kopieren — dW Spalten × dH Zeilen.
+    // Single-plane BGRA: 4 Bytes pro Pixel, dW Spalten × dH Zeilen
+    // kopieren. Padding-Rows (libvlc lieferte mehr als displayHeight)
+    // werden ausgelassen → kein grüner Streifen.
     {
-        uint8_t *srcY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 0);
-        uint8_t *dstY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(dst, 0);
-        size_t srcPitch = CVPixelBufferGetBytesPerRowOfPlane(source, 0);
-        size_t dstPitch = CVPixelBufferGetBytesPerRowOfPlane(dst, 0);
-        size_t copyBytes = (size_t)dW < dstPitch ? (size_t)dW : dstPitch;
-        if (copyBytes > srcPitch) copyBytes = srcPitch;
+        uint8_t *srcPx = (uint8_t *)CVPixelBufferGetBaseAddress(source);
+        uint8_t *dstPx = (uint8_t *)CVPixelBufferGetBaseAddress(dst);
+        size_t srcPitch = CVPixelBufferGetBytesPerRow(source);
+        size_t dstPitch = CVPixelBufferGetBytesPerRow(dst);
+        size_t rowBytes = (size_t)dW * 4;
+        if (rowBytes > dstPitch) rowBytes = dstPitch;
+        if (rowBytes > srcPitch) rowBytes = srcPitch;
         for (int32_t row = 0; row < dH; row++) {
-            memcpy(dstY + (size_t)row * dstPitch,
-                   srcY + (size_t)row * srcPitch,
-                   copyBytes);
-        }
-    }
-    // CbCr-Plane (interleaved): dW/2 chroma-pairs × dH/2 Zeilen,
-    // 2 Bytes pro chroma-pair = dW Bytes per row.
-    {
-        uint8_t *srcUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(source, 1);
-        uint8_t *dstUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(dst, 1);
-        size_t srcPitch = CVPixelBufferGetBytesPerRowOfPlane(source, 1);
-        size_t dstPitch = CVPixelBufferGetBytesPerRowOfPlane(dst, 1);
-        size_t copyBytes = (size_t)dW < dstPitch ? (size_t)dW : dstPitch;
-        if (copyBytes > srcPitch) copyBytes = srcPitch;
-        size_t uvRows = (size_t)dH / 2;
-        for (size_t row = 0; row < uvRows; row++) {
-            memcpy(dstUV + row * dstPitch,
-                   srcUV + row * srcPitch,
-                   copyBytes);
+            memcpy(dstPx + (size_t)row * dstPitch,
+                   srcPx + (size_t)row * srcPitch,
+                   rowBytes);
         }
     }
 
@@ -634,10 +629,12 @@ static void VLCPump_DisplayCB(void *opaque, void *picture);
 
 // ─── Static C Callbacks ─────────────────────────────────────────────
 
-/// libvlc fragt nach dem Pixel-Format. Wir sagen "NV12, 2 planes,
-/// Pitches X/Y". libvlc setzt seinen internen video-output-filter
-/// dann so dass der Decoder direkt in NV12 ausspuckt — keine swscale-
-/// Konvertierung mehr.
+/// libvlc fragt nach dem Pixel-Format. Wir sagen "RV32" (BGRA),
+/// single-plane. libvlc macht intern die nötige YUV→BGRA-Konvertierung
+/// (swscale) und blendet dabei auch SPU/Subtitles rein — das ist der
+/// entscheidende Unterschied zu NV12 wo es keinen YUVA→NV12-Blender
+/// gibt (libvlc-log v1.8.4: "no matching alpha blending routine
+/// (chroma: YUVA -> CVPN)").
 static unsigned VLCPump_FormatSetupCB(void **opaque,
                                        char *chroma,
                                        unsigned *width,
@@ -648,8 +645,8 @@ static unsigned VLCPump_FormatSetupCB(void **opaque,
     VLCFramePump *pump = (__bridge VLCFramePump *)*opaque;
     if (!pump) return 0;
 
-    // fourCC "NV12" — biplanar 4:2:0, video-range.
-    chroma[0] = 'N'; chroma[1] = 'V'; chroma[2] = '1'; chroma[3] = '2';
+    // fourCC "RV32" = libvlcs Name für 32-bit BGRA.
+    chroma[0] = 'R'; chroma[1] = 'V'; chroma[2] = '3'; chroma[3] = '2';
 
     if (![pump _initPoolWithWidth:(int32_t)*width
                             height:(int32_t)*height]) {
@@ -657,26 +654,15 @@ static unsigned VLCPump_FormatSetupCB(void **opaque,
         return 0;
     }
 
-    // Plane 0 = Y (luma): full-resolution, 1 byte/pixel.
-    // Plane 1 = CbCr (chroma): half-vertical-resolution, 2 bytes
-    // per chroma-sample-pair (interleaved Cb, Cr).
-    //
-    // pitches/lines kommen aus dem ECHTEN Probe-Buffer (siehe
-    // _initPoolWithWidth) — nicht aus den nominal width/height die
-    // libvlc reingibt. Der CVPixelBufferPool kann die Plane-Heights
-    // aufgrund von Hardware-Alignment leicht aufrunden; wenn wir
-    // libvlc nominale Werte geben, schreibt's nur diese Anzahl
-    // Zeilen und der Rest ist uninitialisiert = grüner Streifen
-    // unten (User-Bug v1.7.1).
+    // Single-plane BGRA: pitch = bytes pro Zeile (4*width + alignment-
+    // padding), lines = Anzahl Zeilen. Aus dem ECHTEN Probe-Buffer
+    // ausgelesen damit libvlc mit der korrekten stride schreibt.
     pitches[0] = (unsigned)pump->_pitchY;
-    pitches[1] = (unsigned)pump->_pitchUV;
     lines[0] = (unsigned)pump->_linesY;
-    lines[1] = (unsigned)pump->_linesUV;
 
-    NSLog(@"[VLCFramePump] format_setup chroma=NV12 %ux%u "
-          @"pitchY=%u pitchUV=%u",
-          *width, *height, pitches[0], pitches[1]);
-    return 2; // 2 Planes für NV12.
+    NSLog(@"[VLCFramePump] format_setup chroma=RV32 %ux%u pitch=%u lines=%u",
+          *width, *height, pitches[0], lines[0]);
+    return 1; // 1 Plane für BGRA.
 }
 
 static void VLCPump_FormatCleanupCB(void *opaque)
@@ -711,18 +697,14 @@ static void *VLCPump_LockCB(void *opaque, void **planes)
     CVReturn r = CVPixelBufferPoolCreatePixelBuffer(
         kCFAllocatorDefault, pump->_pool, &buffer);
     if (r != kCVReturnSuccess || !buffer) {
-        if (planes) {
-            planes[0] = NULL;
-            planes[1] = NULL;
-        }
+        if (planes) planes[0] = NULL;
         return NULL;
     }
 
-    // BEIDE Planes locken (NV12 hat 2 Planes — Y und CbCr).
+    // Single-plane BGRA: nur planes[0].
     CVPixelBufferLockBaseAddress(buffer, 0);
     if (planes) {
-        planes[0] = CVPixelBufferGetBaseAddressOfPlane(buffer, 0); // Y
-        planes[1] = CVPixelBufferGetBaseAddressOfPlane(buffer, 1); // CbCr
+        planes[0] = CVPixelBufferGetBaseAddress(buffer);
     }
     return (void *)buffer;
 }
