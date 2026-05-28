@@ -135,6 +135,11 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         //     übereinander multiplizieren.
         let playerOptions: [String] = [
             "--freetype-fontsize=60",
+            // VLCs Audio-Time-Stretch-Engine bei jedem pause/play
+            // teardown'd — Init kostet 300-500 ms und produziert
+            // den hörbaren Audio-Lag nach Resume. Deaktivieren weil
+            // wir die Rate eh nicht zur Laufzeit ändern.
+            "--no-audio-time-stretch",
         ]
         self.mediaPlayer = VLCMediaPlayer(options: playerOptions)
 
@@ -345,12 +350,23 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                                   result: @escaping FlutterResult) {
         switch call.method {
         case "play":
-            // v1.5.25 hatte einen Re-Seek-Workaround für Audio-Lag nach
-            // Pause/Play — der hat aber einen sichtbaren Video-Hang
-            // produziert. Wieder raus; der Re-Seek-Sprung war schlimmer
-            // als der ursprüngliche Audio-Lag. Der verbleibende Lag
-            // kommt von der AVAudioSession-Reaktivierung und braucht
-            // einen anderen Fix (Audio-Session "keep-alive").
+            // AVAudioSession explizit reaktivieren BEVOR play()
+            // läuft. iOS deaktiviert die Session typischerweise
+            // nach ein paar Sekunden Pause — beim Resume muss der
+            // AudioUnit sonst neu hochgefahren werden, was den
+            // 1-1.5s Audio-Lag produziert den der User in v1.9.4
+            // gemeldet hat. Mit dem expliziten setActive bleibt
+            // die Session warm.
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback,
+                                        mode: .moviePlayback,
+                                        options: [])
+                try session.setActive(true, options: [])
+            } catch {
+                // Nicht fatal — VLC fällt auf Default zurück, Lag
+                // ist dann wieder da, aber Playback funktioniert.
+            }
             mediaPlayer.play()
             result(nil)
         case "pause":
