@@ -258,19 +258,26 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // trivial zu füllen (Disk-I/O ist schneller als Real-Time-
         // Playback), ein großer Vorrat bringt nichts außer Latenz.
         media.addOption(":file-caching=300")
-        // Verbose-Logging für libvlc — landet via VLCLibvlcLogger in
-        // Application Support / vlc-debug.log. Damit sehen wir was
-        // genau bei der SPU-Pipeline passiert (welche Module geladen
-        // werden, welche filter eingehängt, ob spu_blend aktiv ist).
         media.addOption(":verbose=3")
-        // Zwei Test-Optionen die wir noch nicht probiert haben:
-        // :overlay erzwingt overlay-engine an (default ist YES, aber
-        // explizit setzen schadet nicht falls irgendwo deaktiviert).
-        media.addOption(":overlay")
-        // :spu-track-id=-1 sagt libvlc den AKTIVEN Track durch den
-        // User-API-Call (currentVideoSubTitleIndex) wählen zu lassen
-        // statt auto-disable.
-        media.addOption(":sub-autodetect-file")
+        // ───── DER eigentliche Subtitle-Fix (v1.8.7) ──────────────────
+        // libvlc-Log v1.8.6 hat die Ursache enthüllt:
+        //   "forcing CVPX format: 420v"
+        //   "Using Video Toolbox to decode 'hevc'"
+        //   "no matching alpha blending routine (chroma: YUVA -> CVPN)"
+        //
+        // iOS-VideoToolbox-HW-Decoder zwingt das Decoder-Output-Format
+        // auf CVPN (Apples natives NV12). libvlcs SPU-Blender läuft
+        // VOR der Filter-Chain die wir mit :format-setup-cb steuern —
+        // der Blender muss in CVPN blenden, und genau DEN Blender hat
+        // MobileVLCKits libvlc-Build nicht.
+        //
+        // Lösung: VideoToolbox deaktivieren, libvlc nutzt dann avcodec
+        // (Software-Decoder), der gibt I420 aus, libvlc HAT
+        // YUVA→I420-Blender → SPU wird ins Frame eingebrannt.
+        //
+        // Trade-off: HEVC Software-Decoding ist langsamer als Hardware
+        // (auf A12+ aber problemlos). Wert es für Subs.
+        media.addOption(":codec=avcodec")
 
         didApplyStartSeek = false
         pendingStartSeconds = startSeconds
