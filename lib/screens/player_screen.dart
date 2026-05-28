@@ -56,47 +56,25 @@ class PlayerScreen extends StatelessWidget {
     this.currentEpisodeIndex,
   });
 
-  /// File extensions that AVPlayer (iOS system player) cannot decode
-  /// natively. For these we route through the MobileVLCKit backend on
-  /// iOS (IOSVLCPlayerScreen) — same process, same app, different
-  /// decoder. PiP support for that path lands in Session 2; for now
-  /// the tradeoff is: these files play (they didn't before), but
-  /// without PiP/AirPlay. MP4/MOV/M4V keep going through AVPlayer so
-  /// the PiP story stays intact for well-behaved files.
-  static const _avPlayerUnsupported = {'.mkv', '.avi', '.iso', '.wmv', '.flv'};
-
-  bool get _useVLCOnIOS {
-    final lower = filePath.toLowerCase();
-    for (final ext in _avPlayerUnsupported) {
-      if (lower.endsWith(ext)) return true;
-    }
-    return false;
-  }
+  // Historisch: AVPlayer hat für mp4/mov/m4v auf iOS die schönere
+  // System-PiP/AirPlay-Integration geliefert, also haben wir nur
+  // die AVPlayer-unfähigen Formate (mkv, avi, ...) durch VLCKit
+  // gefahren. Mit v1.9.x ist unser VLCKit-Pfad in jeder Hinsicht
+  // ebenbürtig oder besser: eigener Look, embedded Subs, echte
+  // PiP über AVSampleBufferDisplayLayer, Auto-Next im PiP,
+  // Lockscreen-Karte, Audio-Lag-Fix. Konsistente UX schlägt
+  // Dual-Backend — alle iOS-Wiedergabe geht ab jetzt durch den
+  // VLC-Pfad.
 
   @override
   Widget build(BuildContext context) {
     if (Platform.isIOS) {
-      if (_useVLCOnIOS) {
-        return IOSVLCPlayerScreen(
-          filePath: filePath,
-          title: title,
-          episodeTitle: episodeTitle,
-          mediaId: mediaId,
-          coverImagePath: coverImagePath,
-          subtitlePath: subtitlePath,
-          nextEpisodeFilePath: nextEpisodeFilePath,
-          nextEpisodeTitle: nextEpisodeTitle,
-          nextEpisodeSubtitlePath: nextEpisodeSubtitlePath,
-          startPosition: startPosition,
-          allEpisodes: allEpisodes,
-          currentEpisodeIndex: currentEpisodeIndex,
-        );
-      }
-      return IOSPlayerScreen(
+      return IOSVLCPlayerScreen(
         filePath: filePath,
         title: title,
         episodeTitle: episodeTitle,
         mediaId: mediaId,
+        coverImagePath: coverImagePath,
         subtitlePath: subtitlePath,
         nextEpisodeFilePath: nextEpisodeFilePath,
         nextEpisodeTitle: nextEpisodeTitle,
