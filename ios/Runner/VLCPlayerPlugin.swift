@@ -117,7 +117,18 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         self.subRenderView.isOpaque = false
         self.subRenderView.contentMode = .scaleAspectFit
 
-        self.mediaPlayer = VLCMediaPlayer()
+        // VLCMediaPlayer mit player-level libvlc-options. Anders als
+        // media.addOption() (die nur an die Input-/Decoder-Pipeline
+        // propagieren) werden DIESE Options beim Modul-Init des Players
+        // gelesen — inkl. der vout-side freetype-Renderer-Konfig.
+        // Genau das brauchen wir für die Sub-Schriftgröße, die als
+        // Media-Option durch alle Iterationen ignoriert wurde.
+        let playerOptions: [String] = [
+            "--freetype-fontsize=20",
+            "--sub-text-scale=40",
+            "--freetype-rel-fontsize=40",
+        ]
+        self.mediaPlayer = VLCMediaPlayer(options: playerOptions)
 
         // libvlc-internes Logging anschalten — wir bekommen alle
         // Decoder/Vout/SPU-Messages in eine Datei in App-Support.
