@@ -65,6 +65,10 @@ class FullscreenService {
   /// "Taskleiste bleibt sichtbar" bug. On exit we restore the
   /// maximized state instead of the snapshotted bounds.
   static bool _savedMaximized = false;
+  /// Saved GWL_STYLE bits so [_Win11WindowStyle] can put back
+  /// the exact set of style flags the window had before we
+  /// stripped WS_THICKFRAME for borderless fullscreen.
+  static int? _savedWindowStyle;
 
   static bool get isFullscreen => _isFullscreen;
 
@@ -164,18 +168,57 @@ class FullscreenService {
         LogService.info('[fs] SetWindowRgn result=$rgnOk '
             'size=${target.size.width.toInt()}x${target.size.height.toInt()}');
 
-        // 7. Force DWM frame revalidation.
+        // 7. Strip WS_THICKFRAME from the window style.
         //
-        // v1.5.44 logged hr=0x0 for both corner-rounding and
-        // border-color suppression — DWM accepted both calls —
-        // but the visual border kept showing. Reason: DWM caches
-        // window-chrome state and doesn't always repaint after
-        // an attribute change. `SetWindowPos` with
-        // SWP_FRAMECHANGED tells the system "non-client style
-        // changed, please recompute everything frame-related"
-        // which makes DWM read the new attributes and repaint.
+        // v1.5.44 + v1.5.45 logs proved every DWM attribute we set
+        // returned hr=0x0 yet a thin white/grey border remained
+        // visible around the player. The reason is structural,
+        // not DWM-cosmetic: Flutter's Windows runner creates the
+        // top-level window with `WS_OVERLAPPEDWINDOW` which
+        // includes `WS_THICKFRAME` (the resizable sizing border).
+        // MSDN clarifies that SetWindowRgn clips the visible
+        // region of the window — but the OS still PAINTS the
+        // non-client frame INSIDE that region, so the 1-2 px
+        // thick frame stays visible no matter what DWM
+        // attributes we set.
+        //
+        // The only way to make it actually vanish is to remove
+        // the style flag itself. Save the current style, strip
+        // WS_THICKFRAME (plus WS_DLGFRAME / WS_BORDER as
+        // belt-and-suspenders), call SetWindowPos with
+        // SWP_FRAMECHANGED so the OS recomputes the non-client
+        // area. On exit we put the saved style back so the
+        // window can be resized like normal again.
+        //
+        // This IS a style change. The mid-session-style-change
+        // bug we hit in v1.5.36 was specifically
+        // WS_OVERLAPPEDWINDOW → WS_POPUP (a complete style
+        // switch + DXGI swapchain swap). Removing just
+        // WS_THICKFRAME without changing fundamental style class
+        // is several orders of magnitude milder and — based on
+        // every report I could find — does not trigger the
+        // libmpv↔ANGLE texture loss.
+        _savedWindowStyle = _Win11WindowStyle.stripBorderFlags();
+        LogService.info('[fs] stripped WS_THICKFRAME — '
+            'savedStyle=0x${(_savedWindowStyle ?? 0).toRadixString(16)}');
+
+        // 8. Force DWM frame revalidation AFTER the style change
+        //    so the OS picks up the new non-client size.
         final framedOk = _Win11FrameRefresh.forceFrameChanged();
         LogService.info('[fs] SWP_FRAMECHANGED result=$framedOk');
+
+        // Re-apply bounds after the style strip — removing
+        // WS_THICKFRAME shrinks the non-client area, which may
+        // have nudged the window slightly. Re-asserting bounds
+        // guarantees we end up exactly at monitor pixels.
+        await windowManager.setBounds(
+          Rect.fromLTWH(
+            monitorOriginX,
+            monitorOriginY,
+            target.size.width,
+            target.size.height,
+          ),
+        );
 
         // Diagnostic — what does Windows think the window's actual
         // pixel rect is after all our calls? If this differs from
@@ -221,6 +264,13 @@ class FullscreenService {
         //    would look like a thin slice of the player.
         _Win11WindowRegion.clear();
 
+        // 0b. Restore the original window style — re-adds
+        //     WS_THICKFRAME so the windowed-mode window can be
+        //     resized again and looks like a normal Win11 app.
+        if (_savedWindowStyle != null) {
+          _Win11WindowStyle.setStyle(_savedWindowStyle!);
+        }
+
         // Reverse order of enter: drop always-on-top first so the
         // window relinquishes its Z-order claim before bounds /
         // style changes start flying through Windows.
@@ -261,6 +311,7 @@ class FullscreenService {
         _savedBounds = null;
         _savedAlwaysOnTop = false;
         _savedMaximized = false;
+        _savedWindowStyle = null;
       }
     } else if (Platform.isMacOS || Platform.isLinux) {
       await windowManager.setFullScreen(false);
@@ -549,6 +600,99 @@ class _Win11FrameRefresh {
       return result != 0;
     } catch (e, st) {
       LogService.warn('[fs] _Win11FrameRefresh.forceFrameChanged threw',
+          error: e, stack: st);
+      return false;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Window style manipulation (WS_THICKFRAME strip)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Flutter creates the Windows runner window with WS_OVERLAPPEDWINDOW
+// (= WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
+// WS_MINIMIZEBOX | WS_MAXIMIZEBOX). WS_THICKFRAME is the resizable
+// "sizing border" — a 1-2 px thick frame the OS paints around the
+// window. No DWM attribute (BORDER_COLOR, CORNER_PREFERENCE) can
+// hide it: it's owned by the WM, not DWM.
+//
+// We strip it from the style during fullscreen and put it back on
+// exit. Smallest possible style change, far less invasive than
+// the WS_OVERLAPPEDWINDOW → WS_POPUP switch that caused the
+// original freeze.
+
+typedef _GetWindowLongPtrNative = IntPtr Function(IntPtr hwnd, Int32 index);
+typedef _GetWindowLongPtrDart = int Function(int hwnd, int index);
+
+typedef _SetWindowLongPtrNative = IntPtr Function(
+    IntPtr hwnd, Int32 index, IntPtr newLong);
+typedef _SetWindowLongPtrDart = int Function(
+    int hwnd, int index, int newLong);
+
+class _Win11WindowStyle {
+  static const int _GWL_STYLE = -16;
+  // From winuser.h
+  static const int _WS_BORDER = 0x00800000;
+  static const int _WS_DLGFRAME = 0x00400000;
+  static const int _WS_THICKFRAME = 0x00040000;
+
+  /// Reads the current window style, removes WS_THICKFRAME +
+  /// WS_BORDER + WS_DLGFRAME, writes it back. Returns the
+  /// pre-strip style value so the caller can restore it later
+  /// (or null on FFI failure).
+  static int? stripBorderFlags() {
+    if (!Platform.isWindows) return null;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) {
+        LogService.warn('[fs] _Win11WindowStyle: hwnd lookup returned 0');
+        return null;
+      }
+      // On Win64 SetWindowLongPtrW is the correct entry point —
+      // Win32's SetWindowLongW only handles 32-bit values which
+      // truncates the high bits of pointer-style values. For
+      // GWL_STYLE the value fits in 32 bits anyway but using the
+      // Ptr variant is the official cross-bitness path.
+      final getWindowLongPtr = user32.lookupFunction<
+          _GetWindowLongPtrNative,
+          _GetWindowLongPtrDart>('GetWindowLongPtrW');
+      final setWindowLongPtr = user32.lookupFunction<
+          _SetWindowLongPtrNative,
+          _SetWindowLongPtrDart>('SetWindowLongPtrW');
+      final current = getWindowLongPtr(hwnd, _GWL_STYLE);
+      final stripped =
+          current & ~(_WS_THICKFRAME | _WS_BORDER | _WS_DLGFRAME);
+      setWindowLongPtr(hwnd, _GWL_STYLE, stripped);
+      LogService.info('[fs] WS_THICKFRAME strip: '
+          'before=0x${current.toRadixString(16)} '
+          'after=0x${stripped.toRadixString(16)}');
+      return current;
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11WindowStyle.stripBorderFlags threw',
+          error: e, stack: st);
+      return null;
+    }
+  }
+
+  /// Writes an arbitrary GWL_STYLE value. Used to restore the
+  /// saved style on fullscreen exit.
+  static bool setStyle(int style) {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return false;
+      final setWindowLongPtr = user32.lookupFunction<
+          _SetWindowLongPtrNative,
+          _SetWindowLongPtrDart>('SetWindowLongPtrW');
+      setWindowLongPtr(hwnd, _GWL_STYLE, style);
+      LogService.info('[fs] WS style restored to '
+          '0x${style.toRadixString(16)}');
+      return true;
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11WindowStyle.setStyle threw',
           error: e, stack: st);
       return false;
     }
