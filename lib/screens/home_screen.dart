@@ -780,6 +780,13 @@ class _SleepModeFooter extends StatelessWidget {
         ? 'Sleep-Modus aktiv'
         : 'Sleep-Modus aktiv · Fortschritt wird nicht gespeichert';
 
+    final pill = _OffPillButton(
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+      ),
+    );
+
     return Material(
       color: AppTheme.accent.withValues(alpha: 0.12),
       child: SafeArea(
@@ -791,47 +798,42 @@ class _SleepModeFooter extends StatelessWidget {
               top: BorderSide(color: AppTheme.accent, width: 1),
             ),
           ),
-          child: Stack(
-            alignment: Alignment.center,
+          // Row mit unsichtbarem Pill-Placeholder links sorgt für
+          // echte geometrische Zentrierung des Status-Blocks: das
+          // Phantom auf der linken Seite hat dieselbe Breite wie die
+          // echte Pille rechts, sodass das Expanded-Middle perfekt
+          // mittig sitzt. Vorher mit Stack+Align(centerRight) hat
+          // Align unbeschränkte Höhe gefordert und das ganze Layout
+          // (sichtbar im User-Screenshot v1.9.9) gesprengt.
+          child: Row(
             children: [
-              // Mitte: Icon + Statustext. Bewusst in eine
-              // mainAxisSize.min Row gepackt damit der Block sich
-              // exakt um sich selbst zentriert — egal wie groß die
-              // Status-Pille rechts wird.
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.bedtime_rounded,
-                      color: AppTheme.accent, size: 18),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      statusText,
-                      style: const TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                    ),
-                  ),
-                ],
+              Opacity(
+                opacity: 0,
+                child: IgnorePointer(child: pill),
               ),
-              // Rechte Pille: dedizierter Ausschalten-Button.
-              // Mit Align(centerRight) positioniert damit der
-              // zentrierte Statustext oben unberührt bleibt, auch
-              // wenn der Button breiter wird.
-              Align(
-                alignment: Alignment.centerRight,
-                child: _OffPillButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const SettingsScreen()),
-                  ),
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.bedtime_rounded,
+                        color: AppTheme.accent, size: 18),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        statusText,
+                        style: const TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              pill,
             ],
           ),
         ),
