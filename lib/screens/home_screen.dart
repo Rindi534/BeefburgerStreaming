@@ -754,62 +754,126 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 }
 
-/// Persistenter, schlanker Hinweis am Bildschirmrand wenn der
-/// Sleep-Modus gerade aktiv ist. Tap öffnet die Einstellungen
-/// direkt am Toggle, damit ein schnelles Ausschalten möglich ist
-/// ohne sich durch die Settings-Liste suchen zu müssen.
+/// Persistenter, ästhetischer Hinweis am Bildschirmrand wenn der
+/// Sleep-Modus gerade aktiv ist.
+///
+/// Layout-Logik:
+///  - Icon + Status-Text werden in der Mitte des Footers gruppiert
+///    (zentriert über die volle Breite, NICHT links-anliegend).
+///  - Der "Ausschalten"-Pill sitzt als eigenständig anklickbarer
+///    Akzent-Button rechts daneben — der gesamte Footer ist NICHT
+///    mehr tappable, weil der dedizierte Button die Aktion klarer
+///    kommuniziert als ein riesiger Tap-Bereich der die ganze
+///    Leiste umfasst.
+///  - Auf schmalen Devices (iPhone, < 600 dp Shortest-Side) wird
+///    nur "Sleep-Modus aktiv" angezeigt; der "Fortschritt wird
+///    nicht gespeichert"-Zusatz nur auf iPad und breiter.
 class _SleepModeFooter extends StatelessWidget {
   const _SleepModeFooter();
 
   @override
   Widget build(BuildContext context) {
+    // 600 dp shortestSide ist die kanonische iPhone/iPad-Grenze
+    // (Apple HIG + Flutter material breakpoints).
+    final isCompact = MediaQuery.of(context).size.shortestSide < 600;
+    final statusText = isCompact
+        ? 'Sleep-Modus aktiv'
+        : 'Sleep-Modus aktiv · Fortschritt wird nicht gespeichert';
+
     return Material(
       color: AppTheme.accent.withValues(alpha: 0.12),
-      child: InkWell(
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const SettingsScreen()),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: const BoxDecoration(
-              border: Border(
-                top: BorderSide(color: AppTheme.accent, width: 1),
-              ),
+      child: SafeArea(
+        top: false,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: const BoxDecoration(
+            border: Border(
+              top: BorderSide(color: AppTheme.accent, width: 1),
             ),
-            child: Row(
-              children: const [
-                Icon(Icons.bedtime_rounded,
-                    color: AppTheme.accent, size: 18),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Sleep-Modus aktiv · Fortschritt wird nicht gespeichert',
-                    style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Mitte: Icon + Statustext. Bewusst in eine
+              // mainAxisSize.min Row gepackt damit der Block sich
+              // exakt um sich selbst zentriert — egal wie groß die
+              // Status-Pille rechts wird.
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.bedtime_rounded,
+                      color: AppTheme.accent, size: 18),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      statusText,
+                      style: const TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
                     ),
-                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+              // Rechte Pille: dedizierter Ausschalten-Button.
+              // Mit Align(centerRight) positioniert damit der
+              // zentrierte Statustext oben unberührt bleibt, auch
+              // wenn der Button breiter wird.
+              Align(
+                alignment: Alignment.centerRight,
+                child: _OffPillButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const SettingsScreen()),
                   ),
                 ),
-                SizedBox(width: 8),
-                Text(
-                  'Ausschalten',
-                  style: TextStyle(
-                    color: AppTheme.accent,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Schlanke, ästhetische Akzent-Pille. Visuell ein eigenständiger
+/// Button, kein nackter Text-Link — die volle Akzentfläche samt
+/// rundem Border macht klar dass das ein echtes UI-Control ist
+/// das man tappen kann.
+class _OffPillButton extends StatelessWidget {
+  final VoidCallback onPressed;
+  const _OffPillButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.accent,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(16),
+        child: const Padding(
+          padding: EdgeInsets.fromLTRB(12, 6, 8, 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Ausschalten',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
                 ),
-                SizedBox(width: 4),
-                Icon(Icons.chevron_right_rounded,
-                    color: AppTheme.accent, size: 18),
-              ],
-            ),
+              ),
+              SizedBox(width: 2),
+              Icon(Icons.chevron_right_rounded,
+                  color: Colors.white, size: 18),
+            ],
           ),
         ),
       ),

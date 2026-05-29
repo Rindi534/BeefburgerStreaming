@@ -875,30 +875,17 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           isCurrent: _externalSubsEnabled,
         ),
       ..._subtitleTracks,
-      // Diagnose-Eintrag — letzter im Menü.
-      const VlcTrack(
-        id: _kVirtualShowLogTrackId,
-        name: '📋 libvlc-Log anzeigen',
-        isCurrent: false,
-      ),
+      // Diagnose-Eintrag entfernt (v1.9.9): User-Wunsch, war im
+      // Production-Menü unnötig sichtbar. _showLibvlcLogDialog und
+      // die _kVirtualShowLogTrackId-Konstante bleiben für Dev-
+      // Builds erhalten — wenn wieder Bedarf ist einfach diesen
+      // VlcTrack-Eintrag wieder einkommentieren.
     ];
     await _showTrackMenu(
       context: context,
       title: 'Untertitel',
       tracks: tracks,
       onSelect: (id) async {
-        if (id == _kVirtualShowLogTrackId) {
-          // Sub-Menü ZUERST schließen, sonst poppt sein Auto-Close-
-          // Timer 220ms später den Log-Dialog statt das Menü.
-          // showLibvlcLogDialog wird async — wir warten kurz damit
-          // der Stack sauber ist bevor wir den Dialog pushen.
-          if (Navigator.of(context).canPop()) {
-            Navigator.of(context).pop();
-          }
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-          await _showLibvlcLogDialog();
-          return;
-        }
         if (id == _kVirtualExternalSrtTrackId) {
           // Externe SRT toggeln. libvlc-Track gleichzeitig auf -1
           // damit kein doppelter Decoder-Pfad versucht zu rendern.
