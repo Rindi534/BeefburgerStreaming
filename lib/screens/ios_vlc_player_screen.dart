@@ -381,9 +381,25 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     ]);
   }
 
-  void _handleClose() {
+  /// Status-Bar + Home-Indicator wieder einblenden. Muss VOR
+  /// Navigator.pop() AWAITED werden, sonst hat iOS bis zum Ende
+  /// der Pop-Animation den Player-State noch im UI-Stack und die
+  /// neue Mode-Setzung kommt zu spät an. dispose() macht's danach
+  /// nochmal zur Sicherheit — für den Fall dass der Pop über die
+  /// System-Edge-Swipe-Gesture läuft und _handleClose nicht
+  /// durchkommt.
+  Future<void> _restoreSystemUI() {
+    return SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
+  }
+
+  Future<void> _handleClose() async {
     _saveProgress();
     _restoreOrientation();
+    await _restoreSystemUI();
+    if (!mounted) return;
     Navigator.of(context).pop();
   }
 

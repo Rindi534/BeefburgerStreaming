@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/media_item.dart';
@@ -24,10 +25,18 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // iOS-Status-Bar absichern: der Player räumt seine
+    // immersive-Mode auf, aber wenn der User per Edge-Swipe-Pop
+    // zurückkommt kann der Restore zu spät landen. Wir setzen
+    // hier nochmal explizit auf "alle Overlays sichtbar" sobald
+    // der HomeScreen gemountet wird.
+    _ensureSystemUIVisible();
     // Guaranteed fresh scan on every app start.
     //
     // The MediaLibraryNotifier also kicks off a scan in its own `_init`, but
@@ -46,6 +55,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ref.read(mediaLibraryProvider.notifier).refresh();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// App returned to foreground → re-assert visible Status-Bar.
+  /// Sicherheitsnetz für den Fall dass iOS während des Backgrounds
+  /// (oder beim Zurückkommen aus dem PiP-Sleep) den Mode geändert
+  /// hat. setEnabledSystemUIMode ist idempotent und billig.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _ensureSystemUIVisible();
+    }
+  }
+
+  void _ensureSystemUIVisible() {
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
   }
 
   @override
