@@ -130,56 +130,43 @@ class FullscreenService {
         final monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
         final monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
 
-        // 4. Compute the OUTER window rect needed so that the
-        //    CLIENT area is exactly the monitor size.
+        // 4. Compute the OUTER window rect so the CLIENT area
+        //    covers exactly the monitor pixels.
         //
-        // v1.5.47 logs gave the smoking gun: GetWindowRect was
-        // monitor-sized but GetClientRect was 1904x1071 — i.e.
-        // Flutter only rendered into a region 16 px narrower and
-        // 9 px shorter than the window, leaving a strip of
-        // OS-painted non-client area around it. That strip is
-        // the "white border" the user has been seeing all along.
+        // v1.5.48 used AdjustWindowRectEx which trusts the
+        // window's STYLE FLAGS (WS_CAPTION etc.) — but Flutter
+        // overrides WM_NCCALCSIZE when TitleBarStyle.hidden is
+        // active, removing the title bar non-client zone at
+        // runtime. AdjustWindowRectEx still assumed a 31 px top
+        // inset, so the window was positioned 31 px too high
+        // and Flutter's render ended up 31 px off-screen at top
+        // / 30 px short at bottom — exactly the v1.5.48 report
+        // ("Bild oben abgeschnitten, unten schwarz").
         //
-        // AdjustWindowRectEx is the documented Win32 inverse: it
-        // takes a desired client rect and returns the outer-window
-        // rect needed to produce that client size given the
-        // current style flags. We use it to size the window so
-        // the OUTER rect extends a few pixels OFF-SCREEN on each
-        // side, while the CLIENT — which is what Flutter sees —
-        // covers exactly the monitor's pixel range.
-        //
-        // The off-screen non-client area is invisible — Windows
-        // clips painting at the screen edge — so no resize border
-        // / frame is visible anywhere on the monitor. And Flutter
-        // doesn't see a 1944-pixel client surface; it sees
-        // 1920x1080 and renders exactly that, zero content loss.
-        final ncAdjust = _Win11ClientSize.adjustForClientSize(
-          target.size.width.toInt(),
-          target.size.height.toInt(),
-        );
-        if (ncAdjust != null) {
-          LogService.info('[fs] AdjustWindowRectEx '
-              '→ left=${ncAdjust.left} top=${ncAdjust.top} '
-              'right=${ncAdjust.right} bottom=${ncAdjust.bottom} '
-              '(outer ${ncAdjust.right - ncAdjust.left}'
-              'x${ncAdjust.bottom - ncAdjust.top})');
+        // Fix: measure the ACTUAL non-client insets from the
+        // current window state — independent of what the style
+        // flags claim. We do that via GetWindowRect, GetClientRect
+        // and ClientToScreen which together tell us where the
+        // client area actually lives inside the window. This
+        // captures Flutter's NCCALCSIZE override.
+        final insets = _Win11ClientSize.measureCurrentInsets();
+        if (insets != null) {
+          LogService.info('[fs] measured insets '
+              'L=${insets.left} T=${insets.top} '
+              'R=${insets.right} B=${insets.bottom}');
         }
-        // Fall back to monitor-sized outer if AdjustWindowRectEx
-        // failed for any reason — we still get partial coverage.
-        final leftInset = (ncAdjust?.left ?? 0).toDouble();
-        final topInset = (ncAdjust?.top ?? 0).toDouble();
-        final rightInset = (ncAdjust?.right ?? target.size.width.toInt()) -
-            target.size.width.toInt();
-        final bottomInset = (ncAdjust?.bottom ?? target.size.height.toInt()) -
-            target.size.height.toInt();
-        // The "Inset" values: leftInset is negative if there's
-        // a left border (so we shift window LEFT by |leftInset|).
-        // rightInset is positive if there's a right border (so
-        // we grow the window). topInset / bottomInset analogous.
-        final outerX = monitorOriginX + leftInset;
-        final outerY = monitorOriginY + topInset;
-        final outerW = target.size.width - leftInset + rightInset;
-        final outerH = target.size.height - topInset + bottomInset;
+        final leftInset = (insets?.left ?? 0).toDouble();
+        final topInset = (insets?.top ?? 0).toDouble();
+        final rightInset = (insets?.right ?? 0).toDouble();
+        final bottomInset = (insets?.bottom ?? 0).toDouble();
+        // Position window so that the CLIENT rect coincides with
+        // the monitor pixel range. Outer extends LEFT by leftInset
+        // and UP by topInset, plus grows by rightInset / bottomInset
+        // on the other sides.
+        final outerX = monitorOriginX - leftInset;
+        final outerY = monitorOriginY - topInset;
+        final outerW = target.size.width + leftInset + rightInset;
+        final outerH = target.size.height + topInset + bottomInset;
         await windowManager.setBounds(
           Rect.fromLTWH(outerX, outerY, outerW, outerH),
         );
@@ -961,15 +948,119 @@ typedef _AdjustWindowRectExNative = Int32 Function(
 typedef _AdjustWindowRectExDart = int Function(
     Pointer<_WindowsRectStruct> rect, int style, int menu, int exStyle);
 
+// ClientToScreen converts a point in window-local coordinates to
+// screen coordinates — used so we can locate where the client
+// area actually sits inside the window outer (which captures
+// Flutter's WM_NCCALCSIZE override, unlike AdjustWindowRectEx
+// which only consults style flags).
+
+@Packed(1)
+final class _Win32Point extends Struct {
+  @Int32() external int x;
+  @Int32() external int y;
+}
+
+typedef _ClientToScreenNative = Int32 Function(
+    IntPtr hwnd, Pointer<_Win32Point> point);
+typedef _ClientToScreenDart = int Function(
+    int hwnd, Pointer<_Win32Point> point);
+
+/// Container for the four non-client insets a window has at the
+/// moment of measurement.
+class _NonClientInsets {
+  final int left;
+  final int top;
+  final int right;
+  final int bottom;
+  const _NonClientInsets(this.left, this.top, this.right, this.bottom);
+}
+
 class _Win11ClientSize {
   static const int _GWL_STYLE = -16;
   static const int _GWL_EXSTYLE = -20;
 
-  /// Returns the outer window rect (relative to a notional client
-  /// origin of (0,0)) that produces a client area of
-  /// (clientWidth x clientHeight). Caller adds the monitor origin
-  /// to translate into screen coordinates.
-  /// Returns null on FFI failure.
+  /// Measure the actual non-client insets of the Flutter window
+  /// AS THEY ARE RIGHT NOW.
+  ///
+  /// Why not [adjustForClientSize] / AdjustWindowRectEx? Because
+  /// that API computes insets from the window's STYLE FLAGS
+  /// (WS_CAPTION etc.) — but Flutter overrides WM_NCCALCSIZE
+  /// when TitleBarStyle.hidden is active and effectively removes
+  /// the title bar non-client zone at runtime. AdjustWindowRectEx
+  /// doesn't know about the override and returns a stale ~31 px
+  /// top inset that doesn't match reality. The v1.5.48 logs proved
+  /// this: it returned `top=-31` while GetClientRect showed the
+  /// client extending to the full window height.
+  ///
+  /// This method instead measures the live insets by combining
+  /// GetWindowRect (outer rect in screen coords), GetClientRect
+  /// (client size in window-local coords) and ClientToScreen
+  /// (client-origin → screen coords). The relationship:
+  ///
+  ///   leftInset   = clientScreenX - windowOuter.left
+  ///   topInset    = clientScreenY - windowOuter.top
+  ///   rightInset  = windowOuter.right - clientScreenX - clientWidth
+  ///   bottomInset = windowOuter.bottom - clientScreenY - clientHeight
+  ///
+  /// Captures whatever the OS reports, including Flutter's
+  /// override. Caller MUST invoke this AFTER any title-bar style
+  /// change that might affect the non-client layout, so the
+  /// reading reflects the final state.
+  static _NonClientInsets? measureCurrentInsets() {
+    if (!Platform.isWindows) return null;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return null;
+
+      final getWindowRect = user32
+          .lookupFunction<_GetWindowRectNative, _GetWindowRectDart>(
+              'GetWindowRect');
+      final getClientRect = user32
+          .lookupFunction<_GetClientRectNative, _GetClientRectDart>(
+              'GetClientRect');
+      final clientToScreen = user32
+          .lookupFunction<_ClientToScreenNative, _ClientToScreenDart>(
+              'ClientToScreen');
+
+      final wPtr = calloc<_WindowsRectStruct>();
+      final cPtr = calloc<_WindowsRectStruct>();
+      final ptPtr = calloc<_Win32Point>();
+      try {
+        if (getWindowRect(hwnd, wPtr) == 0) return null;
+        if (getClientRect(hwnd, cPtr) == 0) return null;
+        ptPtr.ref
+          ..x = 0
+          ..y = 0;
+        if (clientToScreen(hwnd, ptPtr) == 0) return null;
+
+        final w = wPtr.ref;
+        final c = cPtr.ref;
+        final p = ptPtr.ref;
+        final clientWidth = c.right - c.left;
+        final clientHeight = c.bottom - c.top;
+        return _NonClientInsets(
+          p.x - w.left,
+          p.y - w.top,
+          w.right - (p.x + clientWidth),
+          w.bottom - (p.y + clientHeight),
+        );
+      } finally {
+        calloc.free(wPtr);
+        calloc.free(cPtr);
+        calloc.free(ptPtr);
+      }
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11ClientSize.measureCurrentInsets threw',
+          error: e, stack: st);
+      return null;
+    }
+  }
+
+  /// Kept for archival / debugging — returns the outer rect needed
+  /// per AdjustWindowRectEx (style-based, not state-based). NOT
+  /// used by the live fullscreen path anymore because Flutter's
+  /// runtime WM_NCCALCSIZE override makes this inaccurate.
   static _Win32Rect? adjustForClientSize(int clientWidth, int clientHeight) {
     if (!Platform.isWindows) return null;
     try {
