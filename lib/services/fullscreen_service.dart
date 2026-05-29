@@ -192,31 +192,30 @@ class FullscreenService {
         LogService.info('[fs] corner-rounding DWM result=$dwmOk');
 
         // 7. Clip the visible region to the on-screen part of the
-        //    window in window-local coordinates. The non-client
-        //    area now lives at negative window-local coords (and
-        //    past the window's right/bottom) — clipping ensures
-        //    nothing of it sneaks back onto the monitor.
+        //    window in WINDOW-LOCAL coordinates.
         //
-        // Window-local origin is at screen (outerX, outerY). The
-        // monitor extent in window-local coords is therefore:
-        //   start = (monitorOriginX - outerX, monitorOriginY - outerY)
-        //         = (-leftInset, -topInset)
-        // BUT SetWindowRgn coordinates can't be negative (they're
-        // unsigned in effect), so we use the equivalent:
-        //   region = (-leftInset, -topInset,
-        //             -leftInset + monitorW, -topInset + monitorH)
-        // which simplifies to the client rect itself since
-        // leftInset/topInset are negative.
-        final rgnOk = _Win11WindowRegion.setRectangularAt(
-          (-leftInset).toInt(),
-          (-topInset).toInt(),
-          (-leftInset + target.size.width).toInt(),
-          (-topInset + target.size.height).toInt(),
-        );
-        LogService.info('[fs] SetWindowRgn result=$rgnOk '
-            'rect=(${(-leftInset).toInt()},${(-topInset).toInt()})-'
-            '(${(-leftInset + target.size.width).toInt()},'
-            '${(-topInset + target.size.height).toInt()})');
+        // Window-local origin (0,0) sits at screen (outerX, outerY)
+        // = (monitorX - leftInset, monitorY - topInset). The MONITOR's
+        // pixel range in window-local coords is therefore:
+        //   start_x = monitorX - outerX = monitorX - (monitorX - leftInset)
+        //           = leftInset  (POSITIVE!)
+        //   start_y = topInset
+        //   end_x   = leftInset + monitorW
+        //   end_y   = topInset  + monitorH
+        //
+        // v1.5.49 had this with a sign flip (`-leftInset` instead of
+        // `+leftInset`), so the region clipped 16 px off the right
+        // edge + 2 px off the bottom of the client — exactly the
+        // "rechts großer transparenter Rahmen, unten ganz schmaler"
+        // the user reported.
+        final rgnX1 = leftInset.toInt();
+        final rgnY1 = topInset.toInt();
+        final rgnX2 = (leftInset + target.size.width).toInt();
+        final rgnY2 = (topInset + target.size.height).toInt();
+        final rgnOk =
+            _Win11WindowRegion.setRectangularAt(rgnX1, rgnY1, rgnX2, rgnY2);
+        LogService.info(
+            '[fs] SetWindowRgn result=$rgnOk rect=($rgnX1,$rgnY1)-($rgnX2,$rgnY2)');
 
         // 8. Force DWM frame revalidation after all chrome calls
         //    so they take visible effect in one repaint.
