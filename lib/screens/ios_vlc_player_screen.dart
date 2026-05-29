@@ -167,35 +167,26 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       DeviceOrientation.landscapeRight,
     ]);
 
-    // iOS-Status-Bar (Uhrzeit, Akku, WLAN-Symbol) ausblenden solange
-    // der Player offen ist — kein Branding-Distraktor während
-    // Filmen. _syncSystemUI() synchronisiert die Bar mit der
-    // _controlsVisible-State (Bar geht auf wenn der User die Player-
-    // Chrome einblendet, geht weg wenn sie wieder ausblendet). Beim
-    // ersten Mount sind die Controls sichtbar (_controlsVisible=true)
-    // → das Folgende blendet die Bar erstmal mit ein, der spätere
-    // 3s-Timer blendet sie dann zusammen mit den Controls aus.
-    _syncSystemUI();
+    // iOS-Status-Bar (Uhrzeit, Akku, WLAN-Symbol) durchgehend
+    // ausblenden solange der Player offen ist.
+    //
+    // v1.9.10-Versuch hatte die Bar dynamisch an _controlsVisible
+    // aufgehängt (immersive → manual), aber `SystemUiMode.immersive`
+    // ist auf iOS sticky — der Zurück-Schalter auf `manual` greift
+    // unzuverlässig (Bug-Report: nicht beim Re-Tap, nicht mal mehr
+    // im Home-Screen). User-OK aus dem ursprünglichen Brief: "wenn
+    // nicht möglich, halt dauerhaft im Player ausgeblendet".
+    //
+    // Wir nutzen `SystemUiMode.manual` mit leerer Overlay-Liste
+    // statt `immersive` — explizit, deterministisch, beim dispose()
+    // ebenso explizit wieder auf `SystemUiOverlay.values` gesetzt.
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: const <SystemUiOverlay>[],
+    );
 
     _scheduleControlsHide();
     _loadExternalSubs();
-  }
-
-  /// Macht die iOS-System-Status-Bar an _controlsVisible „aufhängen":
-  /// Controls visible → Bar visible, Controls hidden → Bar hidden.
-  /// Anderen Plattformen ist das egal (kein-op).
-  void _syncSystemUI() {
-    if (_controlsVisible) {
-      SystemChrome.setEnabledSystemUIMode(
-        SystemUiMode.manual,
-        overlays: SystemUiOverlay.values,
-      );
-    } else {
-      // immersive blendet StatusBar UND Home-Indicator aus; das ist
-      // genau das was wir wollen — nichts soll vom Bild ablenken
-      // wenn der User keinen Control-Overlay angefordert hat.
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
-    }
   }
 
   /// Lädt externe `.srt` neben dem Video (Pfad kommt aus
@@ -256,13 +247,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _controlsHideTimer = Timer(const Duration(seconds: 3), () {
       if (!mounted) return;
       setState(() => _controlsVisible = false);
-      _syncSystemUI();
     });
   }
 
   void _toggleControls() {
     setState(() => _controlsVisible = !_controlsVisible);
-    _syncSystemUI();
     if (_controlsVisible) _scheduleControlsHide();
   }
 

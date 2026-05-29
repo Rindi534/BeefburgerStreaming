@@ -780,60 +780,54 @@ class _SleepModeFooter extends StatelessWidget {
         ? 'Sleep-Modus aktiv'
         : 'Sleep-Modus aktiv · Fortschritt wird nicht gespeichert';
 
-    final pill = _OffPillButton(
-      onPressed: () => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const SettingsScreen()),
-      ),
-    );
-
     return Material(
       color: AppTheme.accent.withValues(alpha: 0.12),
       child: SafeArea(
         top: false,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          // Schlanke 6 px vertikal — der Container schrumpft auf die
+          // natürliche Höhe seiner Row, die ihrerseits vom Pill-
+          // Button (~28 px) dominiert wird. Vorher 10 px war
+          // unnötig wuchtig.
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           decoration: const BoxDecoration(
             border: Border(
               top: BorderSide(color: AppTheme.accent, width: 1),
             ),
           ),
-          // Row mit unsichtbarem Pill-Placeholder links sorgt für
-          // echte geometrische Zentrierung des Status-Blocks: das
-          // Phantom auf der linken Seite hat dieselbe Breite wie die
-          // echte Pille rechts, sodass das Expanded-Middle perfekt
-          // mittig sitzt. Vorher mit Stack+Align(centerRight) hat
-          // Align unbeschränkte Höhe gefordert und das ganze Layout
-          // (sichtbar im User-Screenshot v1.9.9) gesprengt.
+          // Eine einzige Row mit mainAxisAlignment.center —
+          // Mond + Text + Pille wandern als kompakte Gruppe in
+          // die Bildschirmmitte mit fixen ästhetischen Abständen
+          // (10/12 px). Horizontal: durch mainAxisAlignment.center.
+          // Vertikal: durch Container-padding gepaart mit
+          // crossAxisAlignment.center (Default) auf der Row.
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.max,
             children: [
-              Opacity(
-                opacity: 0,
-                child: IgnorePointer(child: pill),
-              ),
-              Expanded(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.bedtime_rounded,
-                        color: AppTheme.accent, size: 18),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        statusText,
-                        style: const TextStyle(
-                          color: AppTheme.textPrimary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
-                      ),
-                    ),
-                  ],
+              const Icon(Icons.bedtime_rounded,
+                  color: AppTheme.accent, size: 17),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  statusText,
+                  style: const TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
                 ),
               ),
-              pill,
+              const SizedBox(width: 12),
+              _OffPillButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const SettingsScreen()),
+                ),
+              ),
             ],
           ),
         ),
@@ -854,12 +848,12 @@ class _OffPillButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: AppTheme.accent,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onPressed,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         child: const Padding(
-          padding: EdgeInsets.fromLTRB(12, 6, 8, 6),
+          padding: EdgeInsets.fromLTRB(10, 5, 7, 5),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -867,14 +861,14 @@ class _OffPillButton extends StatelessWidget {
                 'Ausschalten',
                 style: TextStyle(
                   color: Colors.white,
-                  fontSize: 12,
+                  fontSize: 11.5,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 0.2,
                 ),
               ),
-              SizedBox(width: 2),
+              SizedBox(width: 1),
               Icon(Icons.chevron_right_rounded,
-                  color: Colors.white, size: 18),
+                  color: Colors.white, size: 16),
             ],
           ),
         ),
