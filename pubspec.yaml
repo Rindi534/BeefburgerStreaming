@@ -1,7 +1,7 @@
 name: beefburger_streaming
 description: "BeefburgerStreaming — deine lokale Streaming-Plattform für Filme und Serien."
 publish_to: 'none'
-version: 1.5.47+52
+version: 1.5.48+53
 
 environment:
   sdk: ^3.11.4

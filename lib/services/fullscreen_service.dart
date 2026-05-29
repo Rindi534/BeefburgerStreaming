@@ -130,13 +130,58 @@ class FullscreenService {
         final monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
         final monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
 
+        // 4. Compute the OUTER window rect needed so that the
+        //    CLIENT area is exactly the monitor size.
+        //
+        // v1.5.47 logs gave the smoking gun: GetWindowRect was
+        // monitor-sized but GetClientRect was 1904x1071 — i.e.
+        // Flutter only rendered into a region 16 px narrower and
+        // 9 px shorter than the window, leaving a strip of
+        // OS-painted non-client area around it. That strip is
+        // the "white border" the user has been seeing all along.
+        //
+        // AdjustWindowRectEx is the documented Win32 inverse: it
+        // takes a desired client rect and returns the outer-window
+        // rect needed to produce that client size given the
+        // current style flags. We use it to size the window so
+        // the OUTER rect extends a few pixels OFF-SCREEN on each
+        // side, while the CLIENT — which is what Flutter sees —
+        // covers exactly the monitor's pixel range.
+        //
+        // The off-screen non-client area is invisible — Windows
+        // clips painting at the screen edge — so no resize border
+        // / frame is visible anywhere on the monitor. And Flutter
+        // doesn't see a 1944-pixel client surface; it sees
+        // 1920x1080 and renders exactly that, zero content loss.
+        final ncAdjust = _Win11ClientSize.adjustForClientSize(
+          target.size.width.toInt(),
+          target.size.height.toInt(),
+        );
+        if (ncAdjust != null) {
+          LogService.info('[fs] AdjustWindowRectEx '
+              '→ left=${ncAdjust.left} top=${ncAdjust.top} '
+              'right=${ncAdjust.right} bottom=${ncAdjust.bottom} '
+              '(outer ${ncAdjust.right - ncAdjust.left}'
+              'x${ncAdjust.bottom - ncAdjust.top})');
+        }
+        // Fall back to monitor-sized outer if AdjustWindowRectEx
+        // failed for any reason — we still get partial coverage.
+        final leftInset = (ncAdjust?.left ?? 0).toDouble();
+        final topInset = (ncAdjust?.top ?? 0).toDouble();
+        final rightInset = (ncAdjust?.right ?? target.size.width.toInt()) -
+            target.size.width.toInt();
+        final bottomInset = (ncAdjust?.bottom ?? target.size.height.toInt()) -
+            target.size.height.toInt();
+        // The "Inset" values: leftInset is negative if there's
+        // a left border (so we shift window LEFT by |leftInset|).
+        // rightInset is positive if there's a right border (so
+        // we grow the window). topInset / bottomInset analogous.
+        final outerX = monitorOriginX + leftInset;
+        final outerY = monitorOriginY + topInset;
+        final outerW = target.size.width - leftInset + rightInset;
+        final outerH = target.size.height - topInset + bottomInset;
         await windowManager.setBounds(
-          Rect.fromLTWH(
-            monitorOriginX,
-            monitorOriginY,
-            target.size.width,
-            target.size.height,
-          ),
+          Rect.fromLTWH(outerX, outerY, outerW, outerH),
         );
 
         // 5. The critical bit: keep us above the taskbar so it
@@ -153,39 +198,40 @@ class FullscreenService {
         //    that was leftover after v1.5.43 (DWM frame border is
         //    painted OUTSIDE the window rect by the compositor —
         //    SetWindowRgn alone can't reach it).
+        // 6. DWM rounded-corner kill (belt-and-suspenders for the
+        //    edge case where AdjustWindowRectEx returns slightly
+        //    different insets at runtime than expected).
         final dwmOk = _Win11Corners.setRoundingEnabled(false);
         LogService.info('[fs] corner-rounding DWM result=$dwmOk');
-        final borderOk = _Win11Corners.setBorderHidden(true);
-        LogService.info('[fs] border-color hide result=$borderOk');
-        final rgnOk = _Win11WindowRegion.setRectangular(
-          target.size.width.toInt(),
-          target.size.height.toInt(),
+
+        // 7. Clip the visible region to the on-screen part of the
+        //    window in window-local coordinates. The non-client
+        //    area now lives at negative window-local coords (and
+        //    past the window's right/bottom) — clipping ensures
+        //    nothing of it sneaks back onto the monitor.
+        //
+        // Window-local origin is at screen (outerX, outerY). The
+        // monitor extent in window-local coords is therefore:
+        //   start = (monitorOriginX - outerX, monitorOriginY - outerY)
+        //         = (-leftInset, -topInset)
+        // BUT SetWindowRgn coordinates can't be negative (they're
+        // unsigned in effect), so we use the equivalent:
+        //   region = (-leftInset, -topInset,
+        //             -leftInset + monitorW, -topInset + monitorH)
+        // which simplifies to the client rect itself since
+        // leftInset/topInset are negative.
+        final rgnOk = _Win11WindowRegion.setRectangularAt(
+          (-leftInset).toInt(),
+          (-topInset).toInt(),
+          (-leftInset + target.size.width).toInt(),
+          (-topInset + target.size.height).toInt(),
         );
         LogService.info('[fs] SetWindowRgn result=$rgnOk '
-            'size=${target.size.width.toInt()}x${target.size.height.toInt()}');
+            'rect=(${(-leftInset).toInt()},${(-topInset).toInt()})-'
+            '(${(-leftInset + target.size.width).toInt()},'
+            '${(-topInset + target.size.height).toInt()})');
 
-        // 7. Extend DWM frame into the ENTIRE client area.
-        //
-        // The actual cause of the persistent "white/gray border":
-        // Flutter renders into the window's CLIENT area, but the
-        // window has a non-client area reserved for the title bar
-        // (WS_CAPTION) and resize border (WS_THICKFRAME). With
-        // setBounds(1920x1080) the OUTER rect is monitor-sized,
-        // but the CLIENT rect is smaller — by ~8 px each side and
-        // ~30 px at the top for the would-be title bar. The
-        // user-visible "border" was the unreached non-client
-        // area showing through to whatever's behind the window.
-        //
-        // `DwmExtendFrameIntoClientArea` with margins (-1,-1,-1,-1)
-        // is the documented "sheet of glass" mode: tells DWM that
-        // the entire window IS one big client area, no reserved
-        // non-client zones. Flutter's renderer then covers every
-        // pixel from (0,0) to (window.w, window.h). No style change
-        // (zero freeze risk), no layout damage, no pixel loss.
-        final extendOk = _Win11FrameExtend.extendIntoFullClient();
-        LogService.info('[fs] DwmExtendFrameIntoClientArea(-1) result=$extendOk');
-
-        // 8. Force DWM frame revalidation AFTER all chrome calls
+        // 8. Force DWM frame revalidation after all chrome calls
         //    so they take visible effect in one repaint.
         final framedOk = _Win11FrameRefresh.forceFrameChanged();
         LogService.info('[fs] SWP_FRAMECHANGED result=$framedOk');
@@ -244,11 +290,6 @@ class FullscreenService {
         //    would look like a thin slice of the player.
         _Win11WindowRegion.clear();
 
-        // 0b. Undo the DwmExtendFrameIntoClientArea so the
-        //     windowed-mode window has its normal title bar and
-        //     resize border again. Passing (0,0,0,0) resets the
-        //     frame inset back to defaults.
-        _Win11FrameExtend.resetToDefault();
 
         // Reverse order of enter: drop always-on-top first so the
         // window relinquishes its Z-order claim before bounds /
@@ -833,11 +874,17 @@ typedef _SetWindowRgnNative = Int32 Function(
 typedef _SetWindowRgnDart = int Function(int hwnd, int hrgn, int redraw);
 
 class _Win11WindowRegion {
-  /// Apply a rectangular clipping region to the Flutter window so
-  /// the four corners are right-angled regardless of DWM. width/
-  /// height should match the window's current pixel size (monitor
-  /// dimensions in our case).
-  static bool setRectangular(int width, int height) {
+  /// Apply a rectangular clipping region of (0,0,width,height) —
+  /// kept for compatibility but [setRectangularAt] is preferred
+  /// when the visible area doesn't start at window-local (0,0).
+  static bool setRectangular(int width, int height) =>
+      setRectangularAt(0, 0, width, height);
+
+  /// Apply a rectangular clipping region in window-local
+  /// coordinates. Used when the window overshoots the monitor
+  /// so the on-screen portion (where the client is visible)
+  /// doesn't start at (0,0) of window-local space.
+  static bool setRectangularAt(int x1, int y1, int x2, int y2) {
     if (!Platform.isWindows) return false;
     try {
       final user32 = DynamicLibrary.open('user32.dll');
@@ -853,7 +900,7 @@ class _Win11WindowRegion {
       final setWindowRgn = user32
           .lookupFunction<_SetWindowRgnNative, _SetWindowRgnDart>(
               'SetWindowRgn');
-      final rgn = createRectRgn(0, 0, width, height);
+      final rgn = createRectRgn(x1, y1, x2, y2);
       if (rgn == 0) {
         LogService.warn('[fs] CreateRectRgn returned 0');
         return false;
@@ -862,7 +909,7 @@ class _Win11WindowRegion {
       final result = setWindowRgn(hwnd, rgn, 1);
       return result != 0;
     } catch (e, st) {
-      LogService.warn('[fs] _Win11WindowRegion.setRectangular threw',
+      LogService.warn('[fs] _Win11WindowRegion.setRectangularAt threw',
           error: e, stack: st);
       return false;
     }
@@ -888,6 +935,72 @@ class _Win11WindowRegion {
       LogService.warn('[fs] _Win11WindowRegion.clear threw',
           error: e, stack: st);
       return false;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AdjustWindowRectEx — client-area size calculator
+// ─────────────────────────────────────────────────────────────────────
+//
+// Given a desired CLIENT-area size, AdjustWindowRectEx returns the
+// outer-window rect required to produce that client size with the
+// window's current style/extended-style flags. The returned rect has:
+//   - left   ≤ 0  (negative magnitude = left non-client inset)
+//   - top    ≤ 0  (negative magnitude = top non-client inset)
+//   - right  ≥ clientWidth  (extra width  = right inset)
+//   - bottom ≥ clientHeight (extra height = bottom inset)
+//
+// We use this so the borderless-fullscreen window can be positioned
+// such that its CLIENT — not OUTER — area precisely covers the
+// monitor pixels. The non-client strip sits off-screen and never
+// shows.
+
+typedef _AdjustWindowRectExNative = Int32 Function(
+    Pointer<_WindowsRectStruct> rect, Uint32 style, Int32 menu, Uint32 exStyle);
+typedef _AdjustWindowRectExDart = int Function(
+    Pointer<_WindowsRectStruct> rect, int style, int menu, int exStyle);
+
+class _Win11ClientSize {
+  static const int _GWL_STYLE = -16;
+  static const int _GWL_EXSTYLE = -20;
+
+  /// Returns the outer window rect (relative to a notional client
+  /// origin of (0,0)) that produces a client area of
+  /// (clientWidth x clientHeight). Caller adds the monitor origin
+  /// to translate into screen coordinates.
+  /// Returns null on FFI failure.
+  static _Win32Rect? adjustForClientSize(int clientWidth, int clientHeight) {
+    if (!Platform.isWindows) return null;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return null;
+      final getWindowLongPtr = user32.lookupFunction<
+          _GetWindowLongPtrNative, _GetWindowLongPtrDart>('GetWindowLongPtrW');
+      final adjustWindowRectEx = user32.lookupFunction<
+          _AdjustWindowRectExNative,
+          _AdjustWindowRectExDart>('AdjustWindowRectEx');
+      final style = getWindowLongPtr(hwnd, _GWL_STYLE);
+      final exStyle = getWindowLongPtr(hwnd, _GWL_EXSTYLE);
+      final rectPtr = calloc<_WindowsRectStruct>();
+      try {
+        rectPtr.ref
+          ..left = 0
+          ..top = 0
+          ..right = clientWidth
+          ..bottom = clientHeight;
+        final ok = adjustWindowRectEx(rectPtr, style, 0, exStyle);
+        if (ok == 0) return null;
+        final r = rectPtr.ref;
+        return _Win32Rect(r.left, r.top, r.right, r.bottom);
+      } finally {
+        calloc.free(rectPtr);
+      }
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11ClientSize.adjustForClientSize threw',
+          error: e, stack: st);
+      return null;
     }
   }
 }
