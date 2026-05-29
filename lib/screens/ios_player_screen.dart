@@ -18,6 +18,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/episode.dart';
+import '../providers/settings_provider.dart';
 import '../providers/watch_progress_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ios_native_player_view.dart';
@@ -163,6 +164,11 @@ class _IOSPlayerScreenState extends ConsumerState<IOSPlayerScreen> {
     if (ctrl == null || mediaId == null) return;
     final dur = ctrl.duration;
     if (dur.inSeconds <= 0) return;
+    // Sleep-Modus: NIE in den Watch-Progress schreiben. Identisch zur
+    // Logik im VLC-Player — der Modus muss beide Backends abdecken
+    // damit der User-Stand auch dann erhalten bleibt wenn iOS gerade
+    // den AVPlayer-Pfad nutzt.
+    if (ref.read(settingsProvider).sleepModeEnabled) return;
     // On completion we pin the saved position to the full duration.
     // AVPlayer's .AVPlayerItemDidPlayToEndTime can fire before the
     // periodic time-observer ticks one last time, so `ctrl.position`

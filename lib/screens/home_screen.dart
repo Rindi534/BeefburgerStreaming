@@ -119,6 +119,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ? _buildEmptyState(context, ref)
                     : _buildLibrary(context, ref, library, continueWatching),
       ),
+      // Dezenter persistenter Hinweis im Footer, wenn Sleep-Modus
+      // gerade aktiv ist. Bewusst NICHT als Banner ganz oben (zu
+      // präsent) sondern als schmaler Streifen unten am Rand —
+      // sichtbar genug dass man's beim Aufwachen sofort sieht und
+      // nicht überrascht ist warum Continue-Watching „stehen
+      // geblieben" ist.
+      bottomNavigationBar: settings.sleepModeEnabled
+          ? const _SleepModeFooter()
+          : null,
     );
   }
 
@@ -740,6 +749,69 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Persistenter, schlanker Hinweis am Bildschirmrand wenn der
+/// Sleep-Modus gerade aktiv ist. Tap öffnet die Einstellungen
+/// direkt am Toggle, damit ein schnelles Ausschalten möglich ist
+/// ohne sich durch die Settings-Liste suchen zu müssen.
+class _SleepModeFooter extends StatelessWidget {
+  const _SleepModeFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.accent.withValues(alpha: 0.12),
+      child: InkWell(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const SettingsScreen()),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: const BoxDecoration(
+              border: Border(
+                top: BorderSide(color: AppTheme.accent, width: 1),
+              ),
+            ),
+            child: Row(
+              children: const [
+                Icon(Icons.bedtime_rounded,
+                    color: AppTheme.accent, size: 18),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Sleep-Modus aktiv · Fortschritt wird nicht gespeichert',
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                SizedBox(width: 8),
+                Text(
+                  'Ausschalten',
+                  style: TextStyle(
+                    color: AppTheme.accent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                SizedBox(width: 4),
+                Icon(Icons.chevron_right_rounded,
+                    color: AppTheme.accent, size: 18),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

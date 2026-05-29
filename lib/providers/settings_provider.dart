@@ -18,6 +18,17 @@ class AppSettings {
   /// Default OFF — aligns with "cache reflects current library".
   final bool keepCacheForRemovedMedia;
 
+  /// Sleep-Modus: alles spielt ganz normal weiter — inkl. Auto-Next zur
+  /// jeweils nächsten Folge —, aber NICHTS davon landet im Watch-
+  /// Progress-Box. Gedacht für „mit der Serie einschlafen": morgens
+  /// soll der Continue-Watching-Eintrag weiterhin auf der Folge stehen,
+  /// die der User abends bewusst zuletzt geschaut hat. Default OFF;
+  /// User muss bewusst opt-in (sonst hätte er versehentlich
+  /// nicht-gespeicherten Fortschritt). Nicht persistent in dem Sinn
+  /// dass es nach App-Neustart aktiv bleibt — aber in Hive abgelegt
+  /// damit ein App-Wechsel mitten in der Nacht den Modus erhält.
+  final bool sleepModeEnabled;
+
   const AppSettings({
     this.mediaFolderPath,
     this.exportFolderPath,
@@ -25,6 +36,7 @@ class AppSettings {
     this.thumbnailsEnabled = true,
     this.advancedToolsEnabled = false,
     this.keepCacheForRemovedMedia = false,
+    this.sleepModeEnabled = false,
   });
 
   AppSettings copyWith({
@@ -34,6 +46,7 @@ class AppSettings {
     bool? thumbnailsEnabled,
     bool? advancedToolsEnabled,
     bool? keepCacheForRemovedMedia,
+    bool? sleepModeEnabled,
   }) {
     return AppSettings(
       mediaFolderPath: mediaFolderPath ?? this.mediaFolderPath,
@@ -44,6 +57,7 @@ class AppSettings {
           advancedToolsEnabled ?? this.advancedToolsEnabled,
       keepCacheForRemovedMedia:
           keepCacheForRemovedMedia ?? this.keepCacheForRemovedMedia,
+      sleepModeEnabled: sleepModeEnabled ?? this.sleepModeEnabled,
     );
   }
 }
@@ -62,6 +76,8 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
               _box.get('advancedToolsEnabled', defaultValue: false),
           keepCacheForRemovedMedia:
               _box.get('keepCacheForRemovedMedia', defaultValue: false),
+          sleepModeEnabled:
+              _box.get('sleepModeEnabled', defaultValue: false),
         ));
 
   Future<void> setMediaFolderPath(String path) async {
@@ -92,6 +108,11 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   Future<void> setKeepCacheForRemovedMedia(bool enabled) async {
     await _box.put('keepCacheForRemovedMedia', enabled);
     state = state.copyWith(keepCacheForRemovedMedia: enabled);
+  }
+
+  Future<void> setSleepModeEnabled(bool enabled) async {
+    await _box.put('sleepModeEnabled', enabled);
+    state = state.copyWith(sleepModeEnabled: enabled);
   }
 }
 

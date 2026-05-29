@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/episode.dart';
+import '../providers/settings_provider.dart';
 import '../providers/watch_progress_provider.dart';
 import '../services/srt_parser.dart';
 import '../theme/app_theme.dart';
@@ -461,6 +462,13 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     if (ctrl == null || mediaId == null) return;
     final dur = ctrl.duration;
     if (dur.inSeconds <= 0) return;
+    // Sleep-Modus: hart raus BEVOR irgendwas in der Hive-Box landet.
+    // Wir schreiben weder Position noch Completed-State noch
+    // lastWatched fort — die nächste Folge spielt zwar automatisch
+    // weiter (das ist der Sinn des Modus), aber Continue-Watching
+    // und die Episoden-Markierung in der Detail-Ansicht bleiben
+    // exakt auf dem Stand von vor dem Einschalten des Sleep-Modus.
+    if (ref.read(settingsProvider).sleepModeEnabled) return;
     final pos = treatAsCompleted ? dur : ctrl.position;
     ref.read(watchProgressProvider.notifier).updateProgress(
           mediaId: mediaId,
@@ -694,6 +702,22 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                     ],
                   ),
                 ),
+                // Sleep-Indicator. Wird NUR eingeblendet wenn der Modus
+                // gerade aktiv ist — sichtbares Zeichen für den User
+                // dass nichts in den Fortschritt schreibt, ohne ein
+                // Layout-Sprung wenn er nicht aktiv ist. Tap öffnet
+                // eine kurze Erklärung damit "huch, was ist das"
+                // sofort auflösbar ist.
+                if (ref.watch(settingsProvider).sleepModeEnabled) ...[
+                  _buildEdgeIcon(
+                    icon: Icons.bedtime_rounded,
+                    tooltip: 'Sleep-Modus aktiv',
+                    enabled: true,
+                    onPressed: () => _showSleepModeInfo(context),
+                    accent: true,
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 // Drei symmetrische rechte Buttons. Reihenfolge links→
                 // rechts: Untertitel, Audio, PiP — PiP sitzt damit am
                 // Rand (analog zum sekundären "special" Control in
@@ -1011,24 +1035,101 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   /// 40×40 Icon-Button ohne Inner-Padding — sitzt damit optisch flush
   /// am umgebenden Padding (left: 16 oder right: 16 der Top-Bar).
   /// Zentrales Tap-Target bleibt ein komfortables 40×40.
+  /// Kleines Info-Sheet das aufgeht wenn der User aufs Mond-Icon
+  /// tippt — kurz und freundlich erklärt was der Modus tut und wo
+  /// er ihn ausschaltet. Bewusst kein voller Dialog mit Buttons
+  /// (nicht-aufdringlich), bewusst auch kein Toggle hier (Setting
+  /// ist die kanonische Stelle, sonst hat man's an zwei Orten zu
+  /// pflegen).
+  void _showSleepModeInfo(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppTheme.textMuted.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: const [
+                  Icon(Icons.bedtime_rounded,
+                      color: AppTheme.accent, size: 24),
+                  SizedBox(width: 10),
+                  Text(
+                    'Sleep-Modus aktiv',
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Folgen laufen ganz normal weiter — auch automatisch '
+                'zur nächsten, wenn die aktuelle endet. Aber NICHTS '
+                'davon wird gespeichert: dein Continue-Watching-Stand '
+                'bleibt auf der Folge, die du vor dem Einschlafen '
+                'aktiv geschaut hast.',
+                style: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 14,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Ausschalten: Einstellungen → Sleep-Modus.',
+                style: TextStyle(
+                  color: AppTheme.textMuted,
+                  fontSize: 13,
+                  height: 1.45,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildEdgeIcon({
     required IconData icon,
     required String tooltip,
     required VoidCallback? onPressed,
     bool enabled = true,
+    // `accent: true` macht das Glyph in der App-Akzentfarbe statt
+    // weiß. Genutzt für Status-Indikatoren (z. B. Sleep-Modus), die
+    // optisch klar von normalen Toolbar-Knöpfen unterscheidbar sein
+    // sollen.
+    bool accent = false,
   }) {
+    final color = !enabled
+        ? Colors.white.withValues(alpha: 0.35)
+        : (accent ? AppTheme.accent : Colors.white);
     return SizedBox(
       width: 40,
       height: 40,
       child: IconButton(
         padding: EdgeInsets.zero,
-        icon: Icon(
-          icon,
-          color: enabled
-              ? Colors.white
-              : Colors.white.withValues(alpha: 0.35),
-          size: 26,
-        ),
+        icon: Icon(icon, color: color, size: 26),
         tooltip: tooltip,
         onPressed: onPressed,
       ),

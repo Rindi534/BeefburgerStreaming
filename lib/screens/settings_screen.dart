@@ -158,6 +158,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ref.read(settingsProvider.notifier).setSubtitlesEnabled(v),
           ),
           const SizedBox(height: 8),
+          // Sleep-Modus: alles spielt weiter inkl. Auto-Next, aber kein
+          // Fortschritt landet im Continue-Watching-Box. Gedacht fürs
+          // Einschlafen mit Serie — morgens ist der Stand noch der von
+          // gestern Abend.
+          _buildSwitchTile(
+            context,
+            icon: settings.sleepModeEnabled
+                ? Icons.bedtime_rounded
+                : Icons.bedtime_outlined,
+            title: 'Sleep-Modus',
+            subtitle: settings.sleepModeEnabled
+                ? 'Aktiv — Folgen laufen weiter, Fortschritt wird NICHT gespeichert'
+                : 'Beim Einschlafen: Wiedergabe läuft inkl. Auto-Next, aber dein Stand bleibt wo er gerade ist',
+            value: settings.sleepModeEnabled,
+            onChanged: (v) =>
+                ref.read(settingsProvider.notifier).setSleepModeEnabled(v),
+          ),
+          const SizedBox(height: 8),
           // Advanced capture tools: unlocks screenshot + clip buttons,
           // their keyboard shortcuts (1/2/P), and the Export-Ordner
           // setting. Kept in the "Wiedergabe" section because turning it
