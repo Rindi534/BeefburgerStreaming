@@ -1,7 +1,7 @@
 name: beefburger_streaming
 description: "BeefburgerStreaming — deine lokale Streaming-Plattform für Filme und Serien."
 publish_to: 'none'
-version: 1.5.40+45
+version: 1.5.41+46
 
 environment:
   sdk: ^3.11.4
@@ -28,6 +28,12 @@ dependencies:
   # sized to cover EVERY pixel. window_manager only exposes window
   # bounds, not monitor bounds — screen_retriever fills that gap.
   screen_retriever: ^0.2.0
+  # Used by FullscreenService to call Windows 11 DWM APIs directly
+  # (DwmSetWindowAttribute with DWMWCP_DONOTROUND) to suppress the
+  # window's rounded corners during borderless fullscreen — so the
+  # window can be sized to EXACTLY the monitor without losing any
+  # pixels to corner-overshoot.
+  ffi: ^2.1.0
 
 dev_dependencies:
   flutter_test:

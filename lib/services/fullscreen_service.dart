@@ -1,5 +1,7 @@
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:ui';
+import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
@@ -109,31 +111,22 @@ class FullscreenService {
         final monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
         final monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
 
-        // Windows 11 corner-radius compensation.
+        // Windows 11 corner-radius suppression via DWM.
         //
-        // DWM applies an ~8 px corner radius to every top-level
-        // window. When we size the window to exactly the monitor
-        // bounds, those rounded corners sit ON-screen and leave
-        // tiny transparent wedges where the taskbar/desktop
-        // shimmers through (user-visible: "ein kleiner runder
-        // Bereich unten wo die Taskleiste durchschimmert").
-        //
-        // Cleanest fix would be DwmSetWindowAttribute with
-        // DWMWCP_DONOTROUND, but that needs Win32 FFI and a HWND
-        // lookup. The robust workaround that needs zero extra
-        // dependencies: oversize the window by 12 px in every
-        // direction. The rounded corners then sit OFF-screen
-        // (Windows happily clips them at the monitor edge) and
-        // every on-screen pixel belongs to our window. 12 px is
-        // generous — covers DWM's radius on all supported DPIs
-        // without ever being visible.
-        const corner = 12.0;
+        // Before sizing to exact monitor bounds, tell DWM to NOT
+        // round the corners of our window. Otherwise the ~8 px
+        // corner radius sits ON-screen and leaves four tiny
+        // transparent wedges where the taskbar/desktop shimmers
+        // through. Doing this via DwmSetWindowAttribute is the
+        // proper Win11 way — pixel-exact, no content loss.
+        _Win11Corners.setRoundingEnabled(false);
+
         await windowManager.setBounds(
           Rect.fromLTWH(
-            monitorOriginX - corner,
-            monitorOriginY - corner,
-            target.size.width + corner * 2,
-            target.size.height + corner * 2,
+            monitorOriginX,
+            monitorOriginY,
+            target.size.width,
+            target.size.height,
           ),
         );
 
@@ -175,6 +168,9 @@ class FullscreenService {
         if (_savedBounds != null) {
           await windowManager.setBounds(_savedBounds);
         }
+        // Restore default DWM corner rounding so the windowed
+        // mode looks like every other Windows 11 app again.
+        _Win11Corners.setRoundingEnabled(true);
       } catch (_) {
         // If anything fails, force-exit via window_manager.
         await windowManager.setFullScreen(false);
@@ -228,5 +224,75 @@ class FullscreenService {
       }
     }
     return screenRetriever.getPrimaryDisplay();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Windows 11 corner-rounding control
+// ─────────────────────────────────────────────────────────────────────
+//
+// Calls into `dwmapi.dll` via dart:ffi to toggle DWM's per-window
+// corner-radius preference. We use this so the borderless-fullscreen
+// window can be sized to exactly the monitor's pixel bounds without
+// the ~8 px rounded corners clipping the corners off and exposing
+// the taskbar/desktop behind them.
+//
+// The API has existed since Windows 11 21H2 (build 22000). On older
+// Windows the DwmSetWindowAttribute call returns a non-zero HRESULT
+// and we silently no-op — the user just sees square corners as
+// before.
+//
+// We deliberately keep this self-contained in the same file as the
+// only caller. It's ~30 lines of FFI plumbing that doesn't need to
+// be reused anywhere else; pulling it into a separate file would
+// only add navigation overhead.
+
+typedef _GetForegroundWindowNative = IntPtr Function();
+typedef _GetForegroundWindowDart = int Function();
+
+typedef _DwmSetWindowAttributeNative = Int32 Function(
+    IntPtr hwnd, Uint32 attr, Pointer<Uint32> pvAttr, Uint32 cbAttr);
+typedef _DwmSetWindowAttributeDart = int Function(
+    int hwnd, int attr, Pointer<Uint32> pvAttr, int cbAttr);
+
+class _Win11Corners {
+  // From `dwmapi.h`.
+  static const int _DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+  static const int _DWMWCP_DEFAULT = 0;
+  static const int _DWMWCP_DONOTROUND = 1;
+
+  /// `true`  → restore the OS default (rounded on Win11).
+  /// `false` → force square corners.
+  /// Returns true if the DWM call accepted the change. Best-effort:
+  /// swallow every failure mode (old Windows, FFI lookup miss,
+  /// foreground HWND lookup returns 0).
+  static bool setRoundingEnabled(bool enabled) {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final dwmapi = DynamicLibrary.open('dwmapi.dll');
+      final getForegroundWindow = user32.lookupFunction<
+          _GetForegroundWindowNative,
+          _GetForegroundWindowDart>('GetForegroundWindow');
+      final dwmSet = dwmapi.lookupFunction<_DwmSetWindowAttributeNative,
+          _DwmSetWindowAttributeDart>('DwmSetWindowAttribute');
+      final hwnd = getForegroundWindow();
+      if (hwnd == 0) return false;
+      final ptr = calloc<Uint32>();
+      try {
+        ptr.value = enabled ? _DWMWCP_DEFAULT : _DWMWCP_DONOTROUND;
+        final hr = dwmSet(
+          hwnd,
+          _DWMWA_WINDOW_CORNER_PREFERENCE,
+          ptr,
+          sizeOf<Uint32>(),
+        );
+        return hr == 0; // S_OK
+      } finally {
+        calloc.free(ptr);
+      }
+    } catch (_) {
+      return false;
+    }
   }
 }
