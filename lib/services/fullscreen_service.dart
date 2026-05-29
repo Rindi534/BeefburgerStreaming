@@ -108,12 +108,32 @@ class FullscreenService {
         final vpY = target.visiblePosition?.dy ?? 0;
         final monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
         final monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
+
+        // Windows 11 corner-radius compensation.
+        //
+        // DWM applies an ~8 px corner radius to every top-level
+        // window. When we size the window to exactly the monitor
+        // bounds, those rounded corners sit ON-screen and leave
+        // tiny transparent wedges where the taskbar/desktop
+        // shimmers through (user-visible: "ein kleiner runder
+        // Bereich unten wo die Taskleiste durchschimmert").
+        //
+        // Cleanest fix would be DwmSetWindowAttribute with
+        // DWMWCP_DONOTROUND, but that needs Win32 FFI and a HWND
+        // lookup. The robust workaround that needs zero extra
+        // dependencies: oversize the window by 12 px in every
+        // direction. The rounded corners then sit OFF-screen
+        // (Windows happily clips them at the monitor edge) and
+        // every on-screen pixel belongs to our window. 12 px is
+        // generous — covers DWM's radius on all supported DPIs
+        // without ever being visible.
+        const corner = 12.0;
         await windowManager.setBounds(
           Rect.fromLTWH(
-            monitorOriginX,
-            monitorOriginY,
-            target.size.width,
-            target.size.height,
+            monitorOriginX - corner,
+            monitorOriginY - corner,
+            target.size.width + corner * 2,
+            target.size.height + corner * 2,
           ),
         );
 
