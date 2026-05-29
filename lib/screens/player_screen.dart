@@ -145,7 +145,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _player = Player();
+    // Enable mpv's own log channel at INFO level. This is the ONLY
+    // honest signal we have for video-output freezes — mpv reports
+    // `vo`, `vd`, `gpu`, render-surface, swap-failure events here.
+    // Position-based detection (used previously) failed because mpv's
+    // position clock is audio-driven and keeps advancing even when
+    // the video texture is frozen. v1.5.36 logs proved it.
+    _player = Player(
+      configuration: const PlayerConfiguration(
+        logLevel: MPVLogLevel.info,
+      ),
+    );
     _videoController = VideoController(_player);
     _subtitlesEnabled = ref.read(settingsProvider).subtitlesEnabled;
     _isFullscreen = FullscreenService.isFullscreen;
@@ -250,6 +260,57 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         setState(() => _isCompleted = true);
         _saveProgress();
       }
+    });
+
+    // ----------------------------------------------------------------
+    // Honest freeze diagnostics (Phase 1)
+    // ----------------------------------------------------------------
+    // mpv emits everything we actually care about for the fullscreen-
+    // freeze hunt through its `log` channel: vo/render/surface/swap
+    // failures, GPU context losses, decoder hiccups. Pipe straight to
+    // the rotating app log with an [mpv] prefix.
+    //
+    // Filtered modestly to keep the log readable — we drop the
+    // periodic "cplayer" status spam and the obvious harmless lines
+    // ("Starting playback", "Audio reconfig", …) but keep ANYTHING
+    // from `vo`, `vd`, `gpu`, `swapchain`, `d3d`, `gl`, `render`,
+    // `surface` — the ones that would actually point at the freeze.
+    _player.stream.log.listen((event) {
+      final prefix = event.prefix.toLowerCase();
+      final text = event.text.trim();
+      if (text.isEmpty) return;
+      // Always log warn/error level regardless of prefix.
+      final lvl = event.level.toLowerCase();
+      final isAlwaysInteresting =
+          lvl == 'warn' || lvl == 'error' || lvl == 'fatal';
+      // Output-side prefixes — the ones implicated in surface loss.
+      const interesting = <String>{
+        'vo', 'vd', 'gpu', 'gl', 'd3d', 'render', 'swapchain',
+        'surface', 'angle', 'opengl', 'win32',
+      };
+      final keep = isAlwaysInteresting ||
+          interesting.contains(prefix) ||
+          interesting.any((k) => prefix.contains(k));
+      if (!keep) return;
+      LogService.info('[mpv ${event.level}/${event.prefix}] $text');
+    });
+
+    // Video parameter changes — fires on track/codec/resolution
+    // changes. Useful breadcrumb to spot mid-toggle vo re-inits.
+    _player.stream.videoParams.listen((p) {
+      LogService.info(
+        '[videoParams] w=${p.w} h=${p.h} dw=${p.dw} dh=${p.dh} '
+        'rotate=${p.rotate} aspect=${p.aspect}',
+      );
+    });
+
+    // Width / height streams — these emit when mpv re-queries the
+    // video output size, often coinciding with a vo recreation.
+    _player.stream.width.listen((w) {
+      LogService.info('[width] $w');
+    });
+    _player.stream.height.listen((h) {
+      LogService.info('[height] $h');
     });
 
     // Open media
@@ -587,160 +648,37 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return Icons.volume_up_rounded;
   }
 
-  /// Bumped on every fullscreen toggle so the diagnostic log lines
-  /// can be grouped per-event when the user sends the file.
+  /// Sequence number stamped on every fullscreen toggle's log lines
+  /// so the analyst (= me reading your log) can isolate one toggle's
+  /// events from the surrounding spam.
   int _fsToggleSeq = 0;
 
   Future<void> _toggleFullscreen() async {
     final seq = ++_fsToggleSeq;
     final t0 = DateTime.now();
-    final pos0 = _position;
-    final wasFs = _isFullscreen;
-    final wasPlaying = _isPlaying;
     LogService.info(
-      '[fs#$seq] start wasFullscreen=$wasFs pos=${pos0.inMilliseconds}ms '
-      'playing=$wasPlaying buffering=$_isBuffering',
+      '[fs#$seq] >>> TOGGLE BEGIN '
+      'wasFullscreen=$_isFullscreen pos=${_position.inMilliseconds}ms '
+      'playing=$_isPlaying buffering=$_isBuffering',
     );
 
-    // ------------------------------------------------------------------
-    // Pre-emptive pause-toggle-play
-    // ------------------------------------------------------------------
-    // Reactive nudges (seek after the fact) only worked some of the time
-    // — F11 in particular freezes "fast jedes Mal" because Windows fires
-    // its own WM_SIZE / WM_SYSCOMMAND flurry while the libANGLE surface
-    // is being recreated, and mpv loses the texture binding. Reacting
-    // 500 ms later isn't enough — the renderer is already wedged.
-    //
-    // The reliable workaround is to NOT have the video output active
-    // during the resize: pause first, do the resize, settle for a beat,
-    // then resume. mpv re-arms its vo cleanly when play() is called
-    // against a freshly resized window. The user perceives a ~250 ms
-    // micro-pause, which is leagues better than a permanent freeze that
-    // requires another F-press to recover from.
-    if (wasPlaying) {
-      try {
-        await _player.pause();
-      } catch (_) {/* best-effort */}
-    }
-
     await FullscreenService.toggle();
-    final tAfterToggle = DateTime.now();
+    final tAfter = DateTime.now();
     LogService.info(
       '[fs#$seq] setFullScreen returned after '
-      '${tAfterToggle.difference(t0).inMilliseconds}ms',
+      '${tAfter.difference(t0).inMilliseconds}ms',
     );
 
     if (mounted) {
       setState(() => _isFullscreen = FullscreenService.isFullscreen);
     }
 
-    // Give Windows a beat to finish its resize flurry before we ask
-    // mpv to render the next frame. 150 ms is enough on every machine
-    // I tested; tunable if needed.
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    if (wasPlaying && mounted) {
-      try {
-        await _player.play();
-      } catch (_) {/* best-effort */}
-    }
-
-    // Belt-and-suspenders: even with the pre-emptive pause, if the
-    // freeze somehow still happens we schedule a multi-stage recovery
-    // + diagnostic checkpoints so the log captures it for analysis.
-    if (wasPlaying) {
-      _scheduleFullscreenFreezeCheck(seq, t0, pos0);
-    }
-  }
-
-  /// Three-stage recovery + diagnostic checkpoints after a fullscreen
-  /// toggle. Each stage only fires if the player still looks frozen at
-  /// that point — healthy toggles never hit any of them.
-  ///
-  /// Diagnostic checkpoints at 200/600/1200/2000 ms capture the
-  /// position delta into the rotating app log. Look for `[fs#N]` lines
-  /// in `%APPDATA%\Roaming\com.example\beefburger_streaming\logs\
-  /// app.log` to reconstruct any reported freeze.
-  ///
-  /// Stage 1 (700 ms): seek to current position. Cheap; usually
-  /// enough to push a fresh frame through mpv's vo and reattach
-  /// the texture.
-  /// Stage 2 (1500 ms): pause → seek → play. Forces mpv to fully
-  /// rebuild the vo.
-  /// Stage 3 (2800 ms): NUCLEAR — re-open the media at the saved
-  /// position. Costs ~1 s of buffering but recovers from cases where
-  /// the texture binding itself is permanently broken.
-  void _scheduleFullscreenFreezeCheck(
-      int seq, DateTime t0, Duration pos0) {
-    int posDeltaMs() => (_position - pos0).inMilliseconds;
-    void checkpoint(String label) {
-      if (!mounted) return;
-      final elapsed = DateTime.now().difference(t0).inMilliseconds;
-      LogService.info(
-        '[fs#$seq] checkpoint=$label t+${elapsed}ms posDelta=${posDeltaMs()}ms '
-        'playing=$_isPlaying buffering=$_isBuffering',
-      );
-    }
-
-    // Plain observation points.
-    Future.delayed(const Duration(milliseconds: 200),
-        () => checkpoint('200ms'));
-    Future.delayed(const Duration(milliseconds: 600),
-        () => checkpoint('600ms'));
-
-    // Stage 1: gentle nudge at 700 ms.
-    Future.delayed(const Duration(milliseconds: 700), () async {
-      if (!mounted || !_isPlaying) return;
-      if (posDeltaMs() >= 200) return; // recovered already
-      LogService.warn('[fs#$seq] stage1 firing — position stuck at '
-          '${_position.inMilliseconds}ms');
-      try {
-        await _player.seek(_position);
-      } catch (e, st) {
-        LogService.error('[fs#$seq] stage1 seek failed',
-            error: e, stack: st);
-      }
-    });
-
-    Future.delayed(const Duration(milliseconds: 1200),
-        () => checkpoint('1200ms'));
-
-    // Stage 2: pause → seek → play.
-    Future.delayed(const Duration(milliseconds: 1500), () async {
-      if (!mounted || !_isPlaying) return;
-      if (posDeltaMs() >= 800) return; // recovered
-      LogService.warn('[fs#$seq] stage2 firing — pause→seek→play');
-      try {
-        await _player.pause();
-        await Future.delayed(const Duration(milliseconds: 80));
-        await _player.seek(_position);
-        await Future.delayed(const Duration(milliseconds: 80));
-        await _player.play();
-      } catch (e, st) {
-        LogService.error('[fs#$seq] stage2 failed', error: e, stack: st);
-      }
-    });
-
-    Future.delayed(const Duration(milliseconds: 2000),
-        () => checkpoint('2000ms'));
-
-    // Stage 3: nuclear — re-open media at the saved position.
-    Future.delayed(const Duration(milliseconds: 2800), () async {
-      if (!mounted || !_isPlaying) return;
-      if (posDeltaMs() >= 1500) return; // recovered
-      LogService.warn(
-          '[fs#$seq] stage3 NUCLEAR — reopening media at '
-          '${_position.inMilliseconds}ms');
-      final savePos = _position;
-      try {
-        await _player.open(Media(widget.filePath), play: false);
-        await _player.seek(savePos);
-        await _player.play();
-        LogService.info('[fs#$seq] stage3 reopen completed');
-      } catch (e, st) {
-        LogService.error('[fs#$seq] stage3 reopen failed',
-            error: e, stack: st);
-      }
+    // End marker so the analyst can grep for [fs#N] >>> ... <<< and
+    // see everything between as the toggle window's mpv chatter.
+    Future.delayed(const Duration(milliseconds: 3000), () {
+      LogService.info('[fs#$seq] <<< TOGGLE END (t+3000ms) '
+          'pos=${_position.inMilliseconds}ms playing=$_isPlaying '
+          'buffering=$_isBuffering');
     });
   }
 
