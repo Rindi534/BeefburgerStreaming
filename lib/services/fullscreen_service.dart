@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
+import 'log_service.dart';
 
 /// Cross-platform fullscreen toggle for the player.
 ///
@@ -56,6 +57,14 @@ class FullscreenService {
   /// knows exactly what to put back.
   static Rect? _savedBounds;
   static bool _savedAlwaysOnTop = false;
+  /// True when the user pressed F/F11 while the window was in
+  /// Windows-maximized state (clicked the maximize button). We
+  /// have to `unmaximize()` before applying our borderless bounds
+  /// — otherwise Windows clamps the bounds to the work-area
+  /// (= screen minus taskbar), which is exactly the user-reported
+  /// "Taskleiste bleibt sichtbar" bug. On exit we restore the
+  /// maximized state instead of the snapshotted bounds.
+  static bool _savedMaximized = false;
 
   static bool get isFullscreen => _isFullscreen;
 
@@ -68,6 +77,16 @@ class FullscreenService {
         // 1. Snapshot state for restore on exit.
         _savedBounds = await windowManager.getBounds();
         _savedAlwaysOnTop = await windowManager.isAlwaysOnTop();
+        _savedMaximized = await windowManager.isMaximized();
+
+        // 1b. If the window is currently in Windows-maximized
+        // state, `setBounds` calls below would silently get
+        // clamped to the work area (= screen minus taskbar).
+        // Drop the maximized state first so the upcoming bounds
+        // change is taken at face value.
+        if (_savedMaximized) {
+          await windowManager.unmaximize();
+        }
 
         // 2. Strip title bar so no chrome remains.
         await windowManager.setTitleBarStyle(
@@ -111,16 +130,6 @@ class FullscreenService {
         final monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
         final monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
 
-        // Windows 11 corner-radius suppression via DWM.
-        //
-        // Before sizing to exact monitor bounds, tell DWM to NOT
-        // round the corners of our window. Otherwise the ~8 px
-        // corner radius sits ON-screen and leaves four tiny
-        // transparent wedges where the taskbar/desktop shimmers
-        // through. Doing this via DwmSetWindowAttribute is the
-        // proper Win11 way — pixel-exact, no content loss.
-        _Win11Corners.setRoundingEnabled(false);
-
         await windowManager.setBounds(
           Rect.fromLTWH(
             monitorOriginX,
@@ -134,6 +143,20 @@ class FullscreenService {
         //    can't slide over the player when the cursor hits the
         //    bottom edge.
         await windowManager.setAlwaysOnTop(true);
+
+        // 6. Windows 11 corner-radius suppression via DWM.
+        //
+        // Done LAST — after setBounds, after setAlwaysOnTop. v1.5.41
+        // tried this before the bounds change and the rounded
+        // corners came back: setBounds apparently triggers enough
+        // SetWindowPos chatter that DWM re-applies its defaults.
+        // Calling DwmSetWindowAttribute AFTER everything settled is
+        // the order that sticks. We also resolve the Flutter window
+        // HWND via FindWindowExW by class name (not
+        // GetForegroundWindow) so we don't accidentally target some
+        // overlay/popup that briefly stole focus mid-toggle.
+        final ok = _Win11Corners.setRoundingEnabled(false);
+        LogService.info('[fs] corner-rounding disable result=$ok');
       } catch (_) {
         // Hard failure → fall back to window_manager.setFullScreen
         // so the user at least gets *something* fullscreen-ish.
@@ -165,7 +188,13 @@ class FullscreenService {
           TitleBarStyle.normal,
           windowButtonVisibility: true,
         );
-        if (_savedBounds != null) {
+        if (_savedMaximized) {
+          // Window was maximized when fullscreen started → put
+          // it back into maximized state. Don't apply
+          // _savedBounds because those are the *pre-maximize*
+          // bounds we don't want to use here.
+          await windowManager.maximize();
+        } else if (_savedBounds != null) {
           await windowManager.setBounds(_savedBounds);
         }
         // Restore default DWM corner rounding so the windowed
@@ -177,6 +206,7 @@ class FullscreenService {
       } finally {
         _savedBounds = null;
         _savedAlwaysOnTop = false;
+        _savedMaximized = false;
       }
     } else if (Platform.isMacOS || Platform.isLinux) {
       await windowManager.setFullScreen(false);
@@ -247,6 +277,14 @@ class FullscreenService {
 // be reused anywhere else; pulling it into a separate file would
 // only add navigation overhead.
 
+typedef _FindWindowExWNative = IntPtr Function(
+    IntPtr hwndParent,
+    IntPtr hwndChildAfter,
+    Pointer<Utf16> lpszClass,
+    Pointer<Utf16> lpszWindow);
+typedef _FindWindowExWDart = int Function(int hwndParent, int hwndChildAfter,
+    Pointer<Utf16> lpszClass, Pointer<Utf16> lpszWindow);
+
 typedef _GetForegroundWindowNative = IntPtr Function();
 typedef _GetForegroundWindowDart = int Function();
 
@@ -261,23 +299,53 @@ class _Win11Corners {
   static const int _DWMWCP_DEFAULT = 0;
   static const int _DWMWCP_DONOTROUND = 1;
 
+  /// Flutter's hard-coded top-level window class on Windows.
+  /// Registered in `windows/runner/win32_window.cpp` of every
+  /// Flutter Windows app — exact match across versions.
+  static const String _flutterWindowClass = 'FLUTTER_RUNNER_WIN32_WINDOW';
+
+  /// Resolve the Flutter window's HWND.
+  ///
+  /// Primary strategy: `FindWindowExW(NULL, NULL,
+  /// "FLUTTER_RUNNER_WIN32_WINDOW", NULL)`. Walks all top-level
+  /// windows looking for the Flutter class; we have exactly one,
+  /// so the first hit is ours. Robust against focus changes that
+  /// would foil `GetForegroundWindow`.
+  ///
+  /// Fallback: `GetForegroundWindow()` if FindWindowEx returns 0
+  /// (extremely unlikely on a running app but cheap to guard).
+  static int _findFlutterHwnd(DynamicLibrary user32) {
+    final findWindowExW =
+        user32.lookupFunction<_FindWindowExWNative, _FindWindowExWDart>(
+            'FindWindowExW');
+    final classPtr = _flutterWindowClass.toNativeUtf16();
+    try {
+      final hwnd = findWindowExW(0, 0, classPtr, nullptr);
+      if (hwnd != 0) return hwnd;
+    } finally {
+      calloc.free(classPtr);
+    }
+    final getForegroundWindow = user32.lookupFunction<
+        _GetForegroundWindowNative,
+        _GetForegroundWindowDart>('GetForegroundWindow');
+    return getForegroundWindow();
+  }
+
   /// `true`  → restore the OS default (rounded on Win11).
   /// `false` → force square corners.
-  /// Returns true if the DWM call accepted the change. Best-effort:
-  /// swallow every failure mode (old Windows, FFI lookup miss,
-  /// foreground HWND lookup returns 0).
+  /// Returns true if the DWM call accepted the change.
   static bool setRoundingEnabled(bool enabled) {
     if (!Platform.isWindows) return false;
     try {
       final user32 = DynamicLibrary.open('user32.dll');
       final dwmapi = DynamicLibrary.open('dwmapi.dll');
-      final getForegroundWindow = user32.lookupFunction<
-          _GetForegroundWindowNative,
-          _GetForegroundWindowDart>('GetForegroundWindow');
       final dwmSet = dwmapi.lookupFunction<_DwmSetWindowAttributeNative,
           _DwmSetWindowAttributeDart>('DwmSetWindowAttribute');
-      final hwnd = getForegroundWindow();
-      if (hwnd == 0) return false;
+      final hwnd = _findFlutterHwnd(user32);
+      if (hwnd == 0) {
+        LogService.warn('[fs] _Win11Corners: hwnd lookup returned 0');
+        return false;
+      }
       final ptr = calloc<Uint32>();
       try {
         ptr.value = enabled ? _DWMWCP_DEFAULT : _DWMWCP_DONOTROUND;
@@ -287,11 +355,15 @@ class _Win11Corners {
           ptr,
           sizeOf<Uint32>(),
         );
+        LogService.info('[fs] DwmSetWindowAttribute hwnd=0x${hwnd.toRadixString(16)} '
+            'pref=${ptr.value} hr=0x${hr.toRadixString(16)}');
         return hr == 0; // S_OK
       } finally {
         calloc.free(ptr);
       }
-    } catch (_) {
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11Corners.setRoundingEnabled threw',
+          error: e, stack: st);
       return false;
     }
   }
