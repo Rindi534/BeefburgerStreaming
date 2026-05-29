@@ -65,10 +65,6 @@ class FullscreenService {
   /// "Taskleiste bleibt sichtbar" bug. On exit we restore the
   /// maximized state instead of the snapshotted bounds.
   static bool _savedMaximized = false;
-  /// Saved GWL_STYLE bits so [_Win11WindowStyle] can put back
-  /// the exact set of style flags the window had before we
-  /// stripped WS_THICKFRAME for borderless fullscreen.
-  static int? _savedWindowStyle;
 
   static bool get isFullscreen => _isFullscreen;
 
@@ -168,68 +164,52 @@ class FullscreenService {
         LogService.info('[fs] SetWindowRgn result=$rgnOk '
             'size=${target.size.width.toInt()}x${target.size.height.toInt()}');
 
-        // 7. Strip WS_THICKFRAME from the window style.
+        // 7. Extend DWM frame into the ENTIRE client area.
         //
-        // v1.5.44 + v1.5.45 logs proved every DWM attribute we set
-        // returned hr=0x0 yet a thin white/grey border remained
-        // visible around the player. The reason is structural,
-        // not DWM-cosmetic: Flutter's Windows runner creates the
-        // top-level window with `WS_OVERLAPPEDWINDOW` which
-        // includes `WS_THICKFRAME` (the resizable sizing border).
-        // MSDN clarifies that SetWindowRgn clips the visible
-        // region of the window — but the OS still PAINTS the
-        // non-client frame INSIDE that region, so the 1-2 px
-        // thick frame stays visible no matter what DWM
-        // attributes we set.
+        // The actual cause of the persistent "white/gray border":
+        // Flutter renders into the window's CLIENT area, but the
+        // window has a non-client area reserved for the title bar
+        // (WS_CAPTION) and resize border (WS_THICKFRAME). With
+        // setBounds(1920x1080) the OUTER rect is monitor-sized,
+        // but the CLIENT rect is smaller — by ~8 px each side and
+        // ~30 px at the top for the would-be title bar. The
+        // user-visible "border" was the unreached non-client
+        // area showing through to whatever's behind the window.
         //
-        // The only way to make it actually vanish is to remove
-        // the style flag itself. Save the current style, strip
-        // WS_THICKFRAME (plus WS_DLGFRAME / WS_BORDER as
-        // belt-and-suspenders), call SetWindowPos with
-        // SWP_FRAMECHANGED so the OS recomputes the non-client
-        // area. On exit we put the saved style back so the
-        // window can be resized like normal again.
-        //
-        // This IS a style change. The mid-session-style-change
-        // bug we hit in v1.5.36 was specifically
-        // WS_OVERLAPPEDWINDOW → WS_POPUP (a complete style
-        // switch + DXGI swapchain swap). Removing just
-        // WS_THICKFRAME without changing fundamental style class
-        // is several orders of magnitude milder and — based on
-        // every report I could find — does not trigger the
-        // libmpv↔ANGLE texture loss.
-        _savedWindowStyle = _Win11WindowStyle.stripBorderFlags();
-        LogService.info('[fs] stripped WS_THICKFRAME — '
-            'savedStyle=0x${(_savedWindowStyle ?? 0).toRadixString(16)}');
+        // `DwmExtendFrameIntoClientArea` with margins (-1,-1,-1,-1)
+        // is the documented "sheet of glass" mode: tells DWM that
+        // the entire window IS one big client area, no reserved
+        // non-client zones. Flutter's renderer then covers every
+        // pixel from (0,0) to (window.w, window.h). No style change
+        // (zero freeze risk), no layout damage, no pixel loss.
+        final extendOk = _Win11FrameExtend.extendIntoFullClient();
+        LogService.info('[fs] DwmExtendFrameIntoClientArea(-1) result=$extendOk');
 
-        // 8. Force DWM frame revalidation AFTER the style change
-        //    so the OS picks up the new non-client size.
+        // 8. Force DWM frame revalidation AFTER all chrome calls
+        //    so they take visible effect in one repaint.
         final framedOk = _Win11FrameRefresh.forceFrameChanged();
         LogService.info('[fs] SWP_FRAMECHANGED result=$framedOk');
 
-        // Re-apply bounds after the style strip — removing
-        // WS_THICKFRAME shrinks the non-client area, which may
-        // have nudged the window slightly. Re-asserting bounds
-        // guarantees we end up exactly at monitor pixels.
-        await windowManager.setBounds(
-          Rect.fromLTWH(
-            monitorOriginX,
-            monitorOriginY,
-            target.size.width,
-            target.size.height,
-          ),
-        );
-
-        // Diagnostic — what does Windows think the window's actual
-        // pixel rect is after all our calls? If this differs from
-        // the monitor size we passed to setBounds we have a DPI /
-        // clamping issue rather than a DWM-frame issue.
+        // Diagnostic — log BOTH the outer window rect AND the
+        // client rect. If the client rect is smaller than the
+        // window rect we have unreached non-client area = the
+        // "border" the user sees. The DwmExtendFrameIntoClientArea
+        // call above is meant to close that gap. After the
+        // extend, the visual rendering should cover client rect
+        // = window rect.
         final rect = _Win11Diag.getWindowRect();
         if (rect != null) {
           LogService.info('[fs] GetWindowRect → '
               'left=${rect.left} top=${rect.top} '
               'right=${rect.right} bottom=${rect.bottom} '
               '(${rect.right - rect.left}x${rect.bottom - rect.top})');
+        }
+        final crect = _Win11Diag.getClientRect();
+        if (crect != null) {
+          LogService.info('[fs] GetClientRect → '
+              'left=${crect.left} top=${crect.top} '
+              'right=${crect.right} bottom=${crect.bottom} '
+              '(${crect.right - crect.left}x${crect.bottom - crect.top})');
         }
         LogService.info('[fs] monitor reported '
             '${target.size.width.toInt()}x${target.size.height.toInt()} '
@@ -264,12 +244,11 @@ class FullscreenService {
         //    would look like a thin slice of the player.
         _Win11WindowRegion.clear();
 
-        // 0b. Restore the original window style — re-adds
-        //     WS_THICKFRAME so the windowed-mode window can be
-        //     resized again and looks like a normal Win11 app.
-        if (_savedWindowStyle != null) {
-          _Win11WindowStyle.setStyle(_savedWindowStyle!);
-        }
+        // 0b. Undo the DwmExtendFrameIntoClientArea so the
+        //     windowed-mode window has its normal title bar and
+        //     resize border again. Passing (0,0,0,0) resets the
+        //     frame inset back to defaults.
+        _Win11FrameExtend.resetToDefault();
 
         // Reverse order of enter: drop always-on-top first so the
         // window relinquishes its Z-order claim before bounds /
@@ -311,7 +290,6 @@ class FullscreenService {
         _savedBounds = null;
         _savedAlwaysOnTop = false;
         _savedMaximized = false;
-        _savedWindowStyle = null;
       }
     } else if (Platform.isMacOS || Platform.isLinux) {
       await windowManager.setFullScreen(false);
@@ -699,6 +677,11 @@ class _Win11WindowStyle {
   }
 }
 
+typedef _GetClientRectNative = Int32 Function(
+    IntPtr hwnd, Pointer<_WindowsRectStruct> rect);
+typedef _GetClientRectDart = int Function(
+    int hwnd, Pointer<_WindowsRectStruct> rect);
+
 class _Win11Diag {
   /// Returns the window's outer rect in screen coordinates (or
   /// null on FFI failure / no Flutter window found).
@@ -722,6 +705,105 @@ class _Win11Diag {
       }
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Returns the window's client rect (the area Flutter renders
+  /// into) in window-local coordinates. If this is smaller than
+  /// the window rect we have non-client area unreached by Flutter
+  /// — which is exactly the "border" the user sees.
+  static _Win32Rect? getClientRect() {
+    if (!Platform.isWindows) return null;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return null;
+      final getClientRect = user32
+          .lookupFunction<_GetClientRectNative, _GetClientRectDart>(
+              'GetClientRect');
+      final rectPtr = calloc<_WindowsRectStruct>();
+      try {
+        final ok = getClientRect(hwnd, rectPtr);
+        if (ok == 0) return null;
+        final r = rectPtr.ref;
+        return _Win32Rect(r.left, r.top, r.right, r.bottom);
+      } finally {
+        calloc.free(rectPtr);
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DWM frame extension
+// ─────────────────────────────────────────────────────────────────────
+//
+// DwmExtendFrameIntoClientArea tells DWM how much of the window's
+// non-client frame (title bar + borders) should "extend" into the
+// client area. Passing margins of (-1,-1,-1,-1) is the documented
+// special value that means "extend across the ENTIRE client area"
+// — the so-called "sheet of glass" mode used by apps that want
+// full custom chrome (Edge, Spotify, etc.). With this set, the
+// reserved non-client zones effectively vanish and Flutter's
+// client area covers the whole window.
+
+@Packed(1)
+final class _MarginsStruct extends Struct {
+  @Int32() external int cxLeftWidth;
+  @Int32() external int cxRightWidth;
+  @Int32() external int cyTopHeight;
+  @Int32() external int cyBottomHeight;
+}
+
+typedef _DwmExtendFrameNative = Int32 Function(
+    IntPtr hwnd, Pointer<_MarginsStruct> margins);
+typedef _DwmExtendFrameDart = int Function(
+    int hwnd, Pointer<_MarginsStruct> margins);
+
+class _Win11FrameExtend {
+  /// Extend the frame across the entire client area. Removes the
+  /// visual "non-client border" without changing any window style
+  /// flag (so no risk of triggering the swapchain freeze).
+  static bool extendIntoFullClient() {
+    return _setMargins(-1, -1, -1, -1);
+  }
+
+  /// Reset to default — DWM goes back to reserving normal
+  /// non-client area for title bar + resize border.
+  static bool resetToDefault() {
+    return _setMargins(0, 0, 0, 0);
+  }
+
+  static bool _setMargins(int l, int r, int t, int b) {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final dwmapi = DynamicLibrary.open('dwmapi.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return false;
+      final dwmExtend = dwmapi.lookupFunction<
+          _DwmExtendFrameNative,
+          _DwmExtendFrameDart>('DwmExtendFrameIntoClientArea');
+      final ptr = calloc<_MarginsStruct>();
+      try {
+        ptr.ref
+          ..cxLeftWidth = l
+          ..cxRightWidth = r
+          ..cyTopHeight = t
+          ..cyBottomHeight = b;
+        final hr = dwmExtend(hwnd, ptr);
+        LogService.info('[fs] DwmExtendFrameIntoClientArea '
+            'margins=($l,$r,$t,$b) hr=0x${hr.toRadixString(16)}');
+        return hr == 0;
+      } finally {
+        calloc.free(ptr);
+      }
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11FrameExtend._setMargins threw',
+          error: e, stack: st);
+      return false;
     }
   }
 }
