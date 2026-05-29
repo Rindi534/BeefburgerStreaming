@@ -144,25 +144,40 @@ class FullscreenService {
         //    bottom edge.
         await windowManager.setAlwaysOnTop(true);
 
-        // 6. Windows 11 corner-radius suppression.
-        //
-        // v1.5.42 logged `DwmSetWindowAttribute hr=0x0` — i.e. the
-        // DWM call succeeded — but the rounded corners visually
-        // persisted. Flutter's window style apparently keeps DWM
-        // rendering them anyway. To force square corners we apply
-        // a Win32 window region: SetWindowRgn with a rectangular
-        // HRGN of exact monitor pixel size. Windows then clips the
-        // ENTIRE window to that rect, overriding whatever DWM
-        // wants to do with corners. Belt-and-suspenders: keep the
-        // DWM hint too in case it does something in addition.
+        // 6. Suppress every visual "around the window" element DWM
+        //    paints on Win11:
+        //      - rounded corners       → DWMWCP_DONOTROUND
+        //      - thin frame border     → DWMWA_BORDER_COLOR = NONE
+        //      - non-rectangular clip  → SetWindowRgn(rect)
+        //    Combined they nail the "gray border around the player"
+        //    that was leftover after v1.5.43 (DWM frame border is
+        //    painted OUTSIDE the window rect by the compositor —
+        //    SetWindowRgn alone can't reach it).
         final dwmOk = _Win11Corners.setRoundingEnabled(false);
         LogService.info('[fs] corner-rounding DWM result=$dwmOk');
+        final borderOk = _Win11Corners.setBorderHidden(true);
+        LogService.info('[fs] border-color hide result=$borderOk');
         final rgnOk = _Win11WindowRegion.setRectangular(
           target.size.width.toInt(),
           target.size.height.toInt(),
         );
         LogService.info('[fs] SetWindowRgn result=$rgnOk '
             'size=${target.size.width.toInt()}x${target.size.height.toInt()}');
+
+        // Diagnostic — what does Windows think the window's actual
+        // pixel rect is after all our calls? If this differs from
+        // the monitor size we passed to setBounds we have a DPI /
+        // clamping issue rather than a DWM-frame issue.
+        final rect = _Win11Diag.getWindowRect();
+        if (rect != null) {
+          LogService.info('[fs] GetWindowRect → '
+              'left=${rect.left} top=${rect.top} '
+              'right=${rect.right} bottom=${rect.bottom} '
+              '(${rect.right - rect.left}x${rect.bottom - rect.top})');
+        }
+        LogService.info('[fs] monitor reported '
+            '${target.size.width.toInt()}x${target.size.height.toInt()} '
+            'visiblePos=$vpX,$vpY hInset=$hInset vInset=$vInset');
       } catch (_) {
         // Hard failure → fall back to window_manager.setFullScreen
         // so the user at least gets *something* fullscreen-ish.
@@ -210,9 +225,11 @@ class FullscreenService {
         } else if (_savedBounds != null) {
           await windowManager.setBounds(_savedBounds);
         }
-        // Restore default DWM corner rounding so the windowed
-        // mode looks like every other Windows 11 app again.
+        // Restore default DWM corner rounding + border so the
+        // windowed mode looks like every other Windows 11 app
+        // again.
         _Win11Corners.setRoundingEnabled(true);
+        _Win11Corners.setBorderHidden(false);
       } catch (_) {
         // If anything fails, force-exit via window_manager.
         await windowManager.setFullScreen(false);
@@ -311,6 +328,12 @@ class _Win11Corners {
   static const int _DWMWA_WINDOW_CORNER_PREFERENCE = 33;
   static const int _DWMWCP_DEFAULT = 0;
   static const int _DWMWCP_DONOTROUND = 1;
+  static const int _DWMWA_BORDER_COLOR = 34;
+  // DWMWA_COLOR_NONE — tells DWM not to paint the visible frame
+  // border around the window. The colour value `0xFFFFFFFE` is the
+  // sentinel reserved for "no border" since Windows 11 22000.
+  static const int _DWMWA_COLOR_NONE = 0xFFFFFFFE;
+  static const int _DWMWA_COLOR_DEFAULT = 0xFFFFFFFF;
 
   /// Flutter's hard-coded top-level window class on Windows.
   /// Registered in `windows/runner/win32_window.cpp` of every
@@ -378,6 +401,108 @@ class _Win11Corners {
       LogService.warn('[fs] _Win11Corners.setRoundingEnabled threw',
           error: e, stack: st);
       return false;
+    }
+  }
+
+  /// Hide / restore the thin DWM frame border that Win11 paints
+  /// around every window. `true` → no border, `false` → default.
+  ///
+  /// SetWindowRgn alone can't reach this border because DWM paints
+  /// it OUTSIDE the window rect in the compositor. The proper Win11
+  /// way is `DwmSetWindowAttribute(DWMWA_BORDER_COLOR, NONE)`.
+  static bool setBorderHidden(bool hidden) {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final dwmapi = DynamicLibrary.open('dwmapi.dll');
+      final dwmSet = dwmapi.lookupFunction<_DwmSetWindowAttributeNative,
+          _DwmSetWindowAttributeDart>('DwmSetWindowAttribute');
+      final hwnd = _findFlutterHwnd(user32);
+      if (hwnd == 0) return false;
+      final ptr = calloc<Uint32>();
+      try {
+        ptr.value = hidden ? _DWMWA_COLOR_NONE : _DWMWA_COLOR_DEFAULT;
+        final hr = dwmSet(
+          hwnd,
+          _DWMWA_BORDER_COLOR,
+          ptr,
+          sizeOf<Uint32>(),
+        );
+        LogService.info('[fs] DwmSetWindowAttribute(BORDER_COLOR) '
+            'hwnd=0x${hwnd.toRadixString(16)} '
+            'value=0x${ptr.value.toRadixString(16)} '
+            'hr=0x${hr.toRadixString(16)}');
+        return hr == 0;
+      } finally {
+        calloc.free(ptr);
+      }
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11Corners.setBorderHidden threw',
+          error: e, stack: st);
+      return false;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Window-rect diagnostics
+// ─────────────────────────────────────────────────────────────────────
+//
+// Wraps GetWindowRect() so we can verify what Windows ACTUALLY
+// applied as the window's pixel rect after all our setBounds /
+// SetWindowRgn / DWM dance. Surfaced into app.log so any future
+// "ein Pixel zu klein"-style reports can be matched against the
+// monitor reported by screen_retriever — without having to guess
+// whether it's DPI scaling, OS clamping, or a missed call.
+
+final class _Win32Rect {
+  final int left;
+  final int top;
+  final int right;
+  final int bottom;
+  const _Win32Rect(this.left, this.top, this.right, this.bottom);
+}
+
+@Packed(1)
+final class _WindowsRectStruct extends Struct {
+  @Int32()
+  external int left;
+  @Int32()
+  external int top;
+  @Int32()
+  external int right;
+  @Int32()
+  external int bottom;
+}
+
+typedef _GetWindowRectNative = Int32 Function(
+    IntPtr hwnd, Pointer<_WindowsRectStruct> rect);
+typedef _GetWindowRectDart = int Function(
+    int hwnd, Pointer<_WindowsRectStruct> rect);
+
+class _Win11Diag {
+  /// Returns the window's outer rect in screen coordinates (or
+  /// null on FFI failure / no Flutter window found).
+  static _Win32Rect? getWindowRect() {
+    if (!Platform.isWindows) return null;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return null;
+      final getWindowRect = user32
+          .lookupFunction<_GetWindowRectNative, _GetWindowRectDart>(
+              'GetWindowRect');
+      final rectPtr = calloc<_WindowsRectStruct>();
+      try {
+        final ok = getWindowRect(hwnd, rectPtr);
+        if (ok == 0) return null;
+        final r = rectPtr.ref;
+        return _Win32Rect(r.left, r.top, r.right, r.bottom);
+      } finally {
+        calloc.free(rectPtr);
+      }
+    } catch (_) {
+      return null;
     }
   }
 }
