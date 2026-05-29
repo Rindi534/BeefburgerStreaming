@@ -169,8 +169,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 : Icons.bedtime_outlined,
             title: 'Sleep-Modus',
             subtitle: settings.sleepModeEnabled
-                ? 'Aktiv — Folgen laufen weiter, Fortschritt wird NICHT gespeichert'
-                : 'Beim Einschlafen: Wiedergabe läuft inkl. Auto-Next, aber dein Stand bleibt wo er gerade ist',
+                ? 'Aktiv — Folgen laufen weiter mit Auto-Next, aber dein Stand wird nicht aktualisiert'
+                : 'Aus — Wiedergabe läuft normal weiter und der Stand wird wie üblich gespeichert',
             value: settings.sleepModeEnabled,
             onChanged: (v) =>
                 ref.read(settingsProvider.notifier).setSleepModeEnabled(v),
