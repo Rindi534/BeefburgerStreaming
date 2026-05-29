@@ -7,7 +7,7 @@
 ; ffmpeg.exe if you put one in windows/bin/).
 
 #define MyAppName "BeefburgerStreaming"
-#define MyAppVersion "1.5.37"
+#define MyAppVersion "1.5.38"
 #define MyAppPublisher "Jakob"
 #define MyAppExeName "BeefburgerStreaming.exe"
 #define MyBuildDir "..\build\windows\x64\runner\Release"

@@ -313,6 +313,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       LogService.info('[height] $h');
     });
 
+    // ----------------------------------------------------------------
+    // Phase 1.5 — Hypothesis-test: disable hardware decoding
+    // ----------------------------------------------------------------
+    // The v1.5.37 log proved mpv itself is silent during fullscreen
+    // freezes — meaning the freeze is happening in the
+    // libmpv ↔ ANGLE ↔ D3D11 texture-sharing bridge, not in mpv. The
+    // startup log also flashed a `Failed to create EGL surface` error
+    // from `libmpv_render/dxva2-egl` which recovered via a fallback,
+    // suggesting that bridge is brittle on this system.
+    //
+    // Setting `hwdec=no` removes D3D11 from the decode path entirely
+    // (CPU does the heavy lifting). Two outcomes:
+    //  - Freeze disappears → confirmed: bridge / texture issue.
+    //    We'll then keep this OR move to a Flutter-side widget
+    //    refresh (Option B) OR borderless-fullscreen (Option C).
+    //  - Freeze persists → it's something else; we widen the search.
+    //
+    // CPU cost on 1080p H.264/H.265 is moderate on modern CPUs and
+    // entirely acceptable for a single-user player. We'll revisit
+    // hwdec once the freeze cause is nailed down.
+    try {
+      // ignore: avoid_dynamic_calls
+      await (_player.platform as dynamic)?.setProperty('hwdec', 'no');
+      LogService.info('[init] hwdec=no — software decoding enabled');
+    } catch (e, st) {
+      LogService.warn('[init] failed to set hwdec=no',
+          error: e, stack: st);
+    }
+
     // Open media
     await _player.open(Media(widget.filePath));
 
