@@ -164,6 +164,19 @@ class FullscreenService {
         LogService.info('[fs] SetWindowRgn result=$rgnOk '
             'size=${target.size.width.toInt()}x${target.size.height.toInt()}');
 
+        // 7. Force DWM frame revalidation.
+        //
+        // v1.5.44 logged hr=0x0 for both corner-rounding and
+        // border-color suppression — DWM accepted both calls —
+        // but the visual border kept showing. Reason: DWM caches
+        // window-chrome state and doesn't always repaint after
+        // an attribute change. `SetWindowPos` with
+        // SWP_FRAMECHANGED tells the system "non-client style
+        // changed, please recompute everything frame-related"
+        // which makes DWM read the new attributes and repaint.
+        final framedOk = _Win11FrameRefresh.forceFrameChanged();
+        LogService.info('[fs] SWP_FRAMECHANGED result=$framedOk');
+
         // Diagnostic — what does Windows think the window's actual
         // pixel rect is after all our calls? If this differs from
         // the monitor size we passed to setBounds we have a DPI /
@@ -225,11 +238,22 @@ class FullscreenService {
         } else if (_savedBounds != null) {
           await windowManager.setBounds(_savedBounds);
         }
-        // Restore default DWM corner rounding + border so the
-        // windowed mode looks like every other Windows 11 app
-        // again.
+        // Restore default DWM corner rounding.
+        //
+        // We deliberately DO NOT call setBorderHidden(false) here:
+        // v1.5.44 logs proved that passing DWMWA_COLOR_DEFAULT
+        // (0xFFFFFFFF) leaves a thin WHITE pixel frame in windowed
+        // mode on this build of Win11. DWM apparently treats the
+        // sentinel as the actual colour white instead of "system
+        // default". Leaving DWMWA_BORDER_COLOR at DWMWA_COLOR_NONE
+        // means windowed mode has no DWM-painted border around it
+        // — which looks normal (most Win11 apps don't have an
+        // obvious border anyway) and is strictly better than a
+        // white outline that wasn't there before.
         _Win11Corners.setRoundingEnabled(true);
-        _Win11Corners.setBorderHidden(false);
+        // Force frame revalidation so the corner-rounding restore
+        // visually takes effect immediately.
+        _Win11FrameRefresh.forceFrameChanged();
       } catch (_) {
         // If anything fails, force-exit via window_manager.
         await windowManager.setFullScreen(false);
@@ -479,6 +503,57 @@ typedef _GetWindowRectNative = Int32 Function(
     IntPtr hwnd, Pointer<_WindowsRectStruct> rect);
 typedef _GetWindowRectDart = int Function(
     int hwnd, Pointer<_WindowsRectStruct> rect);
+
+// ─────────────────────────────────────────────────────────────────────
+// Frame-changed nudge
+// ─────────────────────────────────────────────────────────────────────
+//
+// `DwmSetWindowAttribute` reports success but DWM frequently
+// doesn't repaint until it's told the non-client area changed.
+// `SetWindowPos` with `SWP_FRAMECHANGED` (and no actual size /
+// position / z-order change) is the canonical way to make DWM
+// re-read all the attributes and redraw the frame on Win11.
+
+typedef _SetWindowPosNative = Int32 Function(IntPtr hwnd, IntPtr hwndAfter,
+    Int32 x, Int32 y, Int32 cx, Int32 cy, Uint32 flags);
+typedef _SetWindowPosDart = int Function(int hwnd, int hwndAfter, int x, int y,
+    int cx, int cy, int flags);
+
+class _Win11FrameRefresh {
+  // SWP flag combos. Documented values straight from `winuser.h`.
+  static const int _SWP_NOSIZE = 0x0001;
+  static const int _SWP_NOMOVE = 0x0002;
+  static const int _SWP_NOZORDER = 0x0004;
+  static const int _SWP_NOACTIVATE = 0x0010;
+  static const int _SWP_FRAMECHANGED = 0x0020;
+
+  static bool forceFrameChanged() {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return false;
+      final setWindowPos = user32
+          .lookupFunction<_SetWindowPosNative, _SetWindowPosDart>(
+              'SetWindowPos');
+      final result = setWindowPos(
+        hwnd,
+        0, // hwndInsertAfter — ignored because of SWP_NOZORDER
+        0, 0, 0, 0,
+        _SWP_NOSIZE |
+            _SWP_NOMOVE |
+            _SWP_NOZORDER |
+            _SWP_NOACTIVATE |
+            _SWP_FRAMECHANGED,
+      );
+      return result != 0;
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11FrameRefresh.forceFrameChanged threw',
+          error: e, stack: st);
+      return false;
+    }
+  }
+}
 
 class _Win11Diag {
   /// Returns the window's outer rect in screen coordinates (or
