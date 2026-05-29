@@ -144,19 +144,25 @@ class FullscreenService {
         //    bottom edge.
         await windowManager.setAlwaysOnTop(true);
 
-        // 6. Windows 11 corner-radius suppression via DWM.
+        // 6. Windows 11 corner-radius suppression.
         //
-        // Done LAST — after setBounds, after setAlwaysOnTop. v1.5.41
-        // tried this before the bounds change and the rounded
-        // corners came back: setBounds apparently triggers enough
-        // SetWindowPos chatter that DWM re-applies its defaults.
-        // Calling DwmSetWindowAttribute AFTER everything settled is
-        // the order that sticks. We also resolve the Flutter window
-        // HWND via FindWindowExW by class name (not
-        // GetForegroundWindow) so we don't accidentally target some
-        // overlay/popup that briefly stole focus mid-toggle.
-        final ok = _Win11Corners.setRoundingEnabled(false);
-        LogService.info('[fs] corner-rounding disable result=$ok');
+        // v1.5.42 logged `DwmSetWindowAttribute hr=0x0` — i.e. the
+        // DWM call succeeded — but the rounded corners visually
+        // persisted. Flutter's window style apparently keeps DWM
+        // rendering them anyway. To force square corners we apply
+        // a Win32 window region: SetWindowRgn with a rectangular
+        // HRGN of exact monitor pixel size. Windows then clips the
+        // ENTIRE window to that rect, overriding whatever DWM
+        // wants to do with corners. Belt-and-suspenders: keep the
+        // DWM hint too in case it does something in addition.
+        final dwmOk = _Win11Corners.setRoundingEnabled(false);
+        LogService.info('[fs] corner-rounding DWM result=$dwmOk');
+        final rgnOk = _Win11WindowRegion.setRectangular(
+          target.size.width.toInt(),
+          target.size.height.toInt(),
+        );
+        LogService.info('[fs] SetWindowRgn result=$rgnOk '
+            'size=${target.size.width.toInt()}x${target.size.height.toInt()}');
       } catch (_) {
         // Hard failure → fall back to window_manager.setFullScreen
         // so the user at least gets *something* fullscreen-ish.
@@ -180,6 +186,13 @@ class FullscreenService {
 
     if (Platform.isWindows) {
       try {
+        // 0. Drop the rectangular window region FIRST so the
+        //    window can be sized + styled freely again. Without
+        //    this the saved-bounds restore would still be clipped
+        //    to the fullscreen rectangle and the windowed mode
+        //    would look like a thin slice of the player.
+        _Win11WindowRegion.clear();
+
         // Reverse order of enter: drop always-on-top first so the
         // window relinquishes its Z-order claim before bounds /
         // style changes start flying through Windows.
@@ -363,6 +376,90 @@ class _Win11Corners {
       }
     } catch (e, st) {
       LogService.warn('[fs] _Win11Corners.setRoundingEnabled threw',
+          error: e, stack: st);
+      return false;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Windows rectangular region clipping
+// ─────────────────────────────────────────────────────────────────────
+//
+// SetWindowRgn defines the visible region of a window — anything
+// outside is clipped. By passing a perfect rectangle covering the
+// whole window we force Windows to ignore DWM's corner radius and
+// render the four corners as actual right-angles. Used when
+// DwmSetWindowAttribute(DWMWCP_DONOTROUND) returns S_OK but the
+// rounded corners visually persist (observed on Win11 with
+// Flutter's default window style).
+//
+// MSDN note: after calling SetWindowRgn, the OS owns the HRGN. We
+// must NOT DeleteObject it ourselves — Windows will release it on
+// next SetWindowRgn or window destruction.
+
+typedef _CreateRectRgnNative = IntPtr Function(
+    Int32 x1, Int32 y1, Int32 x2, Int32 y2);
+typedef _CreateRectRgnDart = int Function(int x1, int y1, int x2, int y2);
+
+typedef _SetWindowRgnNative = Int32 Function(
+    IntPtr hwnd, IntPtr hrgn, Int32 redraw);
+typedef _SetWindowRgnDart = int Function(int hwnd, int hrgn, int redraw);
+
+class _Win11WindowRegion {
+  /// Apply a rectangular clipping region to the Flutter window so
+  /// the four corners are right-angled regardless of DWM. width/
+  /// height should match the window's current pixel size (monitor
+  /// dimensions in our case).
+  static bool setRectangular(int width, int height) {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final gdi32 = DynamicLibrary.open('gdi32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) {
+        LogService.warn('[fs] _Win11WindowRegion: hwnd lookup returned 0');
+        return false;
+      }
+      final createRectRgn = gdi32
+          .lookupFunction<_CreateRectRgnNative, _CreateRectRgnDart>(
+              'CreateRectRgn');
+      final setWindowRgn = user32
+          .lookupFunction<_SetWindowRgnNative, _SetWindowRgnDart>(
+              'SetWindowRgn');
+      final rgn = createRectRgn(0, 0, width, height);
+      if (rgn == 0) {
+        LogService.warn('[fs] CreateRectRgn returned 0');
+        return false;
+      }
+      // bRedraw=1 forces a repaint of the now-clipped window.
+      final result = setWindowRgn(hwnd, rgn, 1);
+      return result != 0;
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11WindowRegion.setRectangular threw',
+          error: e, stack: st);
+      return false;
+    }
+  }
+
+  /// Restore the default (full) window region — i.e. DWM is back
+  /// in charge of corner rounding. Called when exiting fullscreen
+  /// so windowed mode looks normal again.
+  static bool clear() {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return false;
+      final setWindowRgn = user32
+          .lookupFunction<_SetWindowRgnNative, _SetWindowRgnDart>(
+              'SetWindowRgn');
+      // Passing NULL (0) for the HRGN restores default — window
+      // gets the whole client area as its visible region again.
+      final result = setWindowRgn(hwnd, 0, 1);
+      return result != 0;
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11WindowRegion.clear threw',
           error: e, stack: st);
       return false;
     }
