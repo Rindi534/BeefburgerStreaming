@@ -118,6 +118,15 @@ class ThumbnailService {
     if (_ffmpegChecked) return _ffmpegPath;
     _ffmpegChecked = true;
 
+    // Sandboxed platforms can't spawn child processes; even looking
+    // for `ffmpeg` via Process.run('where'/'which') would throw.
+    // Return null fast so callers fall back to their non-ffmpeg code
+    // path (or a clear "not available" message).
+    if (Platform.isIOS || Platform.isAndroid) {
+      _ffmpegPath = null;
+      return null;
+    }
+
     // 1. Check bundled ffmpeg next to executable
     try {
       final exeDir = p.dirname(Platform.resolvedExecutable);

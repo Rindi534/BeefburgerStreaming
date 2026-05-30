@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:media_kit/media_kit.dart';
@@ -53,14 +54,20 @@ Future<bool> _acquireSingleInstanceLock() async {
 // ignore: unused_element
 RandomAccessFile? _lockHandle;
 
-/// iOS/Windows: moves any existing Hive files from the app's Documents
-/// directory to the Support directory [dest]. No-op if no files need
-/// moving (fresh install or already migrated). Best-effort per-file —
-/// any failure falls through to the corruption-recovery path in
-/// `_openBoxSafely`.
+/// iOS / Windows: moves any existing Hive files from the app's
+/// Documents directory to the Support directory [dest]. No-op if no
+/// files need moving (fresh install or already migrated).
+///
+/// The three box names below are hard-coded to match what `main()`
+/// opens — both the data (`.hive`) and lock (`.lock`) files. Fail
+/// silently per-file: losing a `.lock` sidecar is harmless (Hive
+/// recreates it), and losing a data file falls through to the usual
+/// corruption-recovery path in `_openBoxSafely`.
 Future<void> _migrateHiveFromDocumentsIfNeeded(String dest) async {
   try {
     final docs = await getApplicationDocumentsDirectory();
+    // Don't copy onto ourselves — older Flutter versions or weirdly
+    // symlinked sandboxes could theoretically have Documents == Support.
     if (p.equals(docs.path, dest)) return;
     const boxes = ['settings', 'watch_progress', 'media_history'];
     for (final name in boxes) {
@@ -71,15 +78,19 @@ Future<void> _migrateHiveFromDocumentsIfNeeded(String dest) async {
           try {
             await src.rename(target.path);
           } catch (_) {
+            // Cross-filesystem? Fall back to copy + delete.
             try {
               await src.copy(target.path);
               await src.delete();
-            } catch (_) {/* give up silently */}
+            } catch (_) {/* give up silently, see doc above */}
           }
         }
       }
     }
-  } catch (_) {/* non-fatal */}
+  } catch (_) {
+    // Any top-level failure is non-fatal — a fresh Hive in Support
+    // is the correct fallback.
+  }
 }
 
 void main() async {
@@ -91,6 +102,19 @@ void main() async {
   await runZonedGuarded<Future<void>>(() async {
     WidgetsFlutterBinding.ensureInitialized();
     MediaKit.ensureInitialized();
+
+  // iOS: App global auf Portrait locken. Home, Detail-Screen und
+  // Einstellungen sind nie für Landscape designed — ohne diesen Lock
+  // kippt das Layout um sobald ein iPhone mal zur Seite gedreht wird.
+  // Der Video-Player (IOSVLCPlayerScreen / IOSPlayerScreen) überschreibt
+  // das in seinem initState temporär zu Landscape und stellt beim
+  // Schließen die Portrait-Lock wieder her.
+  if (Platform.isIOS) {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+  }
 
   // Initialize window manager for desktop platforms
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {

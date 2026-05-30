@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// User-facing guide to the media folder structure & naming conventions.
+/// Anleitung für die Mobile-App: wie kommen Videos überhaupt aufs
+/// iPhone hinein, wie der Medien-Ordner aufgebaut sein muss, welche
+/// Konventionen die App beim Scan erwartet.
 class FolderConventionScreen extends StatelessWidget {
   const FolderConventionScreen({super.key});
 
@@ -16,6 +18,39 @@ class FolderConventionScreen extends StatelessWidget {
         children: [
           _intro(context),
           const SizedBox(height: 24),
+
+          _sectionTitle(context, 'Videos aufs iPhone bringen'),
+          const SizedBox(height: 12),
+          _ruleCard(
+            icon: Icons.folder_shared_rounded,
+            title: 'Über die Dateien-App',
+            description:
+                'BeefburgerStreaming bekommt seinen eigenen Ordner unter '
+                '„Auf meinem iPhone" → „BeefburgerStreaming" in der iOS-'
+                '„Dateien"-App. Dort hin kopierst du deine Filme und '
+                'Serien — die App liest sie von dort.',
+            highlights: const [
+              'Dateien-App öffnen',
+              'Im Reiter „Durchsuchen" → „Auf meinem iPhone" antippen',
+              'Ordner „BeefburgerStreaming" auswählen',
+              'Hier deine Filme/Serien-Ordner reinkopieren oder per AirDrop senden',
+            ],
+          ),
+          const SizedBox(height: 12),
+          _ruleCard(
+            icon: Icons.cable_rounded,
+            title: 'Vom Computer übertragen',
+            description:
+                'Größere Dateien gehen am komfortabelsten per USB-Kabel '
+                'oder über den Mac/Windows-Finder.',
+            highlights: const [
+              'Mac: iPhone per Kabel anschließen → Finder → iPhone-Eintrag → Reiter „Dateien" → BeefburgerStreaming',
+              'Windows: iTunes oder Apple Devices App → Dateifreigabe → BeefburgerStreaming',
+              'Per AirDrop: einzelne Videos schnell vom Mac/iPhone aus an die App teilen',
+              'Per WLAN: Cloud-Apps (z. B. iCloud Drive) öffnen → Datei → „In Dateien sichern" → Auf meinem iPhone → BeefburgerStreaming',
+            ],
+          ),
+          const SizedBox(height: 28),
 
           _sectionTitle(context, 'So sieht der Medien-Ordner aus'),
           const SizedBox(height: 12),
@@ -56,8 +91,8 @@ class FolderConventionScreen extends StatelessWidget {
                 'Episoden-Nummer irgendwo im Dateinamen, damit die Reihenfolge stimmt. '
                 'Das S##E##-Format funktioniert am zuverlässigsten.',
             highlights: const [
-              'Empfohlen: „S01E03 - Titel.mp4"',
-              'Alternativen: „1x03 - Titel.mp4"',
+              'Empfohlen: „S01E03 - Titel.mkv"',
+              'Alternativen: „1x03 - Titel.mkv"',
               'Alles außer der Episoden-Nummer ist optional',
             ],
           ),
@@ -79,8 +114,6 @@ class FolderConventionScreen extends StatelessWidget {
               'Fallback Startseite:     cover → thumbnail → banner → Auto',
               'Fallback Detail-Banner:  banner → cover → thumbnail',
               'Fallback Weiterschauen:  thumbnail → banner → cover → Auto',
-              'Pro-Tipp: „folder.jpg" wird zusätzlich vom Windows-Explorer als '
-                  'Ordner-Thumbnail angezeigt',
             ],
           ),
           const SizedBox(height: 12),
@@ -88,18 +121,18 @@ class FolderConventionScreen extends StatelessWidget {
             icon: Icons.subtitles_rounded,
             title: 'Untertitel',
             description:
-                'Untertitel werden auf zwei Arten unterstützt: extern als eigene '
-                'Datei neben dem Video, oder eingebettet (bei .mkv meistens '
-                'automatisch dabei). Für externe Dateien zählt vor allem eins: '
-                'der Dateiname muss exakt gleich lauten wie der Video-Dateiname, '
-                'nur mit einer Untertitel-Endung.',
+                'Untertitel werden auf zwei Arten unterstützt: extern als '
+                'eigene Datei neben dem Video, oder eingebettet (in .mkv '
+                'meistens automatisch dabei). Bei externen Dateien zählt '
+                'eines: der Dateiname muss exakt gleich lauten wie der '
+                'Video-Dateiname, nur mit einer Untertitel-Endung.',
             highlights: const [
               'Regel: gleicher Name wie das Video — nur andere Endung',
-              'Beispiel: „S01E01 - Pilot.mp4" → „S01E01 - Pilot.srt"',
+              'Beispiel: „S01E01 - Pilot.mkv" → „S01E01 - Pilot.srt"',
               'Datei liegt im selben Ordner wie das Video',
               'Erlaubte Endungen: .srt · .sub · .ass · .ssa · .vtt',
               'Eingebettete Untertitel in .mkv werden automatisch erkannt',
-              'Ein/Aus-Schalter im Player oben rechts, auch während der Wiedergabe',
+              'Auswahl im Player über das Sprechblasen-Symbol oben',
             ],
           ),
           const SizedBox(height: 12),
@@ -107,12 +140,16 @@ class FolderConventionScreen extends StatelessWidget {
             icon: Icons.play_circle_outline_rounded,
             title: 'Unterstützte Video-Formate',
             description:
-                'Das sind die Dateitypen, die beim Scan erkannt und abgespielt werden.',
+                'Das sind die Dateitypen, die beim Scan erkannt und '
+                'abgespielt werden. Alle gehen durch den gleichen Player '
+                '— inklusive Picture-in-Picture und eingebetteter '
+                'Untertitel.',
             highlights: const [
+              '.mkv — empfohlen (eingebettete Untertitel + mehrere Tonspuren)',
               '.mp4 — Standard-Container, kleinste Dateien',
-              '.mkv — empfohlen (unterstützt eingebettete Untertitel + mehrere Tonspuren)',
-              '.avi — älterer Container, funktioniert',
-              '.iso — DVD-/Blu-ray-Image-Dateien',
+              '.mov — Apples Standard-Container',
+              '.m4v — iTunes-Variante von mp4',
+              '.avi — älterer Container',
             ],
           ),
 
@@ -122,22 +159,33 @@ class FolderConventionScreen extends StatelessWidget {
           _tipCard(
             icon: Icons.refresh_rounded,
             text:
-                'Neue Dateien oder Ordner hinzugefügt? Über „Bibliothek aktualisieren" '
-                'in den Einstellungen oder das Aktualisieren-Symbol oben rechts scannen.',
+                'Neue Dateien oder Ordner hinzugefügt? In den Einstellungen '
+                'auf „Bibliothek aktualisieren" tippen oder direkt auf der '
+                'Startseite über das Aktualisieren-Symbol oben rechts.',
           ),
           const SizedBox(height: 10),
           _tipCard(
             icon: Icons.auto_awesome_rounded,
             text:
-                'Beim ersten Scan werden Vorschaubilder für die Seekleiste im Hintergrund '
-                'erzeugt — die Fortschrittsanzeige oben verschwindet wenn fertig.',
+                'Beim ersten Scan werden Vorschaubilder im Hintergrund '
+                'erzeugt — die Fortschrittsanzeige oben verschwindet, '
+                'wenn alles fertig ist.',
           ),
           const SizedBox(height: 10),
           _tipCard(
             icon: Icons.cleaning_services_rounded,
             text:
-                'Videos aus dem Medien-Ordner gelöscht? Bei der nächsten Aktualisierung '
-                'werden die zugehörigen Vorschaubilder automatisch aufgeräumt.',
+                'Videos aus dem Medien-Ordner gelöscht? Bei der nächsten '
+                'Aktualisierung werden die zugehörigen Vorschaubilder '
+                'automatisch aufgeräumt.',
+          ),
+          const SizedBox(height: 10),
+          _tipCard(
+            icon: Icons.storage_rounded,
+            text:
+                'Die App belegt nur so viel Speicher, wie deine Videos brauchen. '
+                'Standbilder und Cache liegen separat in den App-Daten und '
+                'lassen sich über die Einstellungen jederzeit leeren.',
           ),
         ],
       ),
@@ -160,9 +208,10 @@ class FolderConventionScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'BeefburgerStreaming scannt deinen Medien-Ordner automatisch. '
-              'Wenn du die folgenden Konventionen einhältst, werden Serien, Filme, '
-              'Cover und Untertitel korrekt erkannt.',
+              'BeefburgerStreaming nutzt einen eigenen Ordner in der '
+              'iOS-Dateien-App. Halte die folgenden Konventionen ein, '
+              'und Serien, Filme, Cover und Untertitel werden direkt '
+              'beim Scan korrekt erkannt.',
               style: TextStyle(
                 color: AppTheme.textPrimary.withValues(alpha: 0.9),
                 fontSize: 14,
@@ -186,19 +235,19 @@ class FolderConventionScreen extends StatelessWidget {
   }
 
   Widget _folderTreeCard() {
-    const tree = '''Medien-Ordner/
+    const tree = '''BeefburgerStreaming/         ← in der Dateien-App
 ├── Breaking Bad/              ← Serie
 │   ├── Season 1/
-│   │   ├── S01E01 - Pilot.mp4
-│   │   ├── S01E01 - Pilot.srt   ← Untertitel (gleicher Name)
+│   │   ├── S01E01 - Pilot.mkv
+│   │   ├── S01E01 - Pilot.srt   ← externe Untertitel
 │   │   └── S01E02 - Cat's in the Bag.mkv
 │   ├── Season 2/
 │   │   └── S02E01 - Seven Thirty-Seven.mkv
 │   └── cover.jpg
 │
 ├── Inception/                 ← Film (eigener Ordner)
-│   ├── Inception.mp4
-│   ├── Inception.srt          ← Untertitel
+│   ├── Inception.mkv
+│   ├── Inception.srt
 │   └── cover.jpg
 │
 └── Pulp Fiction.mp4           ← Film (einzelne Datei)''';
@@ -215,8 +264,8 @@ class FolderConventionScreen extends StatelessWidget {
         child: SelectableText(
           tree,
           style: const TextStyle(
-            fontFamily: 'Consolas, Courier New, monospace',
-            fontFamilyFallback: ['Consolas', 'Courier New', 'monospace'],
+            fontFamily: 'Courier',
+            fontFamilyFallback: ['Menlo', 'Courier New', 'monospace'],
             color: AppTheme.textPrimary,
             fontSize: 13,
             height: 1.55,

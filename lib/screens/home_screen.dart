@@ -1,5 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/media_item.dart';
 import '../models/episode.dart';
 import '../models/watch_progress.dart';
@@ -22,10 +25,18 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // iOS-Status-Bar absichern: der Player räumt seine
+    // immersive-Mode auf, aber wenn der User per Edge-Swipe-Pop
+    // zurückkommt kann der Restore zu spät landen. Wir setzen
+    // hier nochmal explizit auf "alle Overlays sichtbar" sobald
+    // der HomeScreen gemountet wird.
+    _ensureSystemUIVisible();
     // Guaranteed fresh scan on every app start.
     //
     // The MediaLibraryNotifier also kicks off a scan in its own `_init`, but
@@ -44,6 +55,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ref.read(mediaLibraryProvider.notifier).refresh();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// App returned to foreground → re-assert visible Status-Bar.
+  /// Sicherheitsnetz für den Fall dass iOS während des Backgrounds
+  /// (oder beim Zurückkommen aus dem PiP-Sleep) den Mode geändert
+  /// hat. setEnabledSystemUIMode ist idempotent und billig.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _ensureSystemUIVisible();
+    }
+  }
+
+  void _ensureSystemUIVisible() {
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
   }
 
   @override
@@ -117,6 +152,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ? _buildEmptyState(context, ref)
                     : _buildLibrary(context, ref, library, continueWatching),
       ),
+      // Dezenter persistenter Hinweis im Footer, wenn Sleep-Modus
+      // gerade aktiv ist. Bewusst NICHT als Banner ganz oben (zu
+      // präsent) sondern als schmaler Streifen unten am Rand —
+      // sichtbar genug dass man's beim Aufwachen sofort sieht und
+      // nicht überrascht ist warum Continue-Watching „stehen
+      // geblieben" ist.
+      bottomNavigationBar: settings.sleepModeEnabled
+          ? const _SleepModeFooter()
+          : null,
     );
   }
 
@@ -175,6 +219,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     MediaLibraryState library,
     List<WatchProgress> continueWatching,
   ) {
+    // Phone-portrait breakpoint. Below this the logo + wide search +
+    // two icon buttons overflow horizontally; we split them into two
+    // rows: compact header (smaller logo + action icons) on top, full-
+    // width search bar in the AppBar's `bottom` slot underneath.
+    final narrow = MediaQuery.of(context).size.width < 500;
+
     return CustomScrollView(
       slivers: [
         // App Bar
@@ -182,41 +232,60 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           floating: true,
           // Taller toolbar so the larger logo has breathing room and the
           // action icons scale up proportionally without looking cramped.
-          toolbarHeight: 78,
-          titleSpacing: 20,
-          // Logo + global search field. The search-field is Expanded so
-          // it eats whatever width is left between the logo and the
-          // action buttons on the right. On narrow windows the field
-          // simply shrinks — it never wraps or pushes other widgets.
-          title: Row(
-            children: [
-              Image.asset(
-                'assets/images/logo_wide.png',
-                height: 58,
-                fit: BoxFit.contain,
-              ),
-              const SizedBox(width: 24),
-              const Expanded(child: GlobalSearchField()),
-              const SizedBox(width: 16),
-            ],
-          ),
+          // On narrow phones we shrink to avoid eating half the screen.
+          toolbarHeight: narrow ? 60 : 78,
+          titleSpacing: narrow ? 12 : 20,
+          // Logo + global search field. On wide screens both live in one
+          // row (search Expanded between logo and actions). On narrow
+          // phones the search moves into `bottom:` so the top row has
+          // breathing room for logo + the two action icons.
+          title: narrow
+              ? Image.asset(
+                  'assets/images/logo_wide.png',
+                  height: 38,
+                  fit: BoxFit.contain,
+                )
+              : Row(
+                  children: [
+                    Image.asset(
+                      'assets/images/logo_wide.png',
+                      height: 58,
+                      fit: BoxFit.contain,
+                    ),
+                    const SizedBox(width: 24),
+                    const Expanded(child: GlobalSearchField()),
+                    const SizedBox(width: 16),
+                  ],
+                ),
           actions: [
             IconButton(
-              icon: const Icon(Icons.refresh_rounded, size: 28),
+              icon: Icon(Icons.refresh_rounded, size: narrow ? 24 : 28),
               onPressed: () =>
                   ref.read(mediaLibraryProvider.notifier).refresh(),
               tooltip: 'Bibliothek aktualisieren',
             ),
             IconButton(
-              icon: const Icon(Icons.settings_rounded, size: 28),
+              icon: Icon(Icons.settings_rounded, size: narrow ? 24 : 28),
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const SettingsScreen()),
               ),
               tooltip: 'Einstellungen',
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: narrow ? 6 : 12),
           ],
+          // Second row: full-width search on narrow phones. Null on
+          // desktop/tablet — the search lives inline in `title`.
+          bottom: narrow
+              ? PreferredSize(
+                  preferredSize: const Size.fromHeight(56),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: const GlobalSearchField(),
+                  ),
+                )
+              : null,
         ),
 
         // Thumbnail generation progress banner
@@ -242,8 +311,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 // (thumbnail → banner → cover → WatchProgress snapshot).
                 // Returns all-null for removed media so the card falls back
                 // to the cover snapshot stored in the WatchProgress record.
+                //
+                // Der iOS-VLC-Player mutiert bei Episoden-Wechsel die
+                // `mediaId` zu `<serienId>::<episodePath>` (damit Watch-
+                // Progress pro Episode gespeichert wird). Für den Image-
+                // Lookup interessiert uns aber nur die Serie → Präfix
+                // vor `::` abschneiden. Sonst matcht der `item.id`-
+                // Vergleich nicht und Thumbnail/Banner/Cover fallen auf
+                // den (oft veralteten) WatchProgress-Snapshot zurück —
+                // genau das war der Thumbnail-Hiccup nach Next-Episode.
+                final idx = id.indexOf('::');
+                final lookupId = idx > 0 ? id.substring(0, idx) : id;
                 for (final item in library.items) {
-                  if (item.id == id) {
+                  if (item.id == lookupId) {
                     return (
                       thumbnail: item.thumbnailImagePath,
                       banner: item.bannerImagePath,
@@ -565,51 +645,86 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildErrorState(BuildContext context, WidgetRef ref, String error) {
+    // Explicit foreground colors are required on this screen: without
+    // them the platform default for ElevatedButton is a dark-on-dark
+    // combination that leaves the button looking like a blank red pill.
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.error_outline_rounded,
-              size: 64, color: AppTheme.accent),
-          const SizedBox(height: 16),
-          Text(error, style: Theme.of(context).textTheme.bodyLarge),
-          const SizedBox(height: 24),
-          Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              ElevatedButton.icon(
-                onPressed: () =>
-                    ref.read(mediaLibraryProvider.notifier).refresh(),
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Erneut versuchen'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.accent,
-                  foregroundColor: Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                size: 64, color: AppTheme.accent),
+            const SizedBox(height: 16),
+            Text(
+              error,
+              style: Theme.of(context).textTheme.bodyLarge,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () =>
+                      ref.read(mediaLibraryProvider.notifier).refresh(),
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Erneut versuchen'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.accent,
+                    foregroundColor: Colors.white,
+                  ),
                 ),
-              ),
-              // Always offer a route to Settings from this screen —
-              // when the stored media folder is gone (moved/unmounted
-              // drive), "Erneut versuchen" re-runs the same failing
-              // scan and leaves the user stuck. Picking a new folder
-              // is the only real escape.
-              OutlinedButton.icon(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const SettingsScreen()),
+                // Always offer a route to Settings from this screen —
+                // when the stored media folder is gone (moved/unmounted
+                // drive), "Erneut versuchen" re-runs the same failing
+                // scan and leaves the user stuck. Picking a new folder
+                // is the only real escape.
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const SettingsScreen()),
+                  ),
+                  icon: const Icon(Icons.settings_rounded),
+                  label: const Text('Einstellungen'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: AppTheme.textMuted),
+                  ),
                 ),
-                icon: const Icon(Icons.settings_rounded),
-                label: const Text('Einstellungen'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  side: const BorderSide(color: AppTheme.textMuted),
-                ),
-              ),
-            ],
-          ),
-        ],
+                // iOS escape hatch: when the container UUID rotates
+                // (reinstall / re-sign), the stored absolute path is
+                // dead. This button force-resets the media folder to
+                // the current Documents dir, which is the only valid
+                // location on iOS anyway.
+                if (Platform.isIOS)
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final docs =
+                          await getApplicationDocumentsDirectory();
+                      await ref
+                          .read(settingsProvider.notifier)
+                          .setMediaFolderPath(docs.path);
+                      await ref
+                          .read(mediaLibraryProvider.notifier)
+                          .refresh();
+                    },
+                    icon: const Icon(Icons.folder_open_rounded),
+                    label: const Text('Dateien-Ordner verwenden'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: AppTheme.textMuted),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -667,6 +782,129 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Persistenter, ästhetischer Hinweis am Bildschirmrand wenn der
+/// Sleep-Modus gerade aktiv ist.
+///
+/// Layout-Logik:
+///  - Icon + Status-Text werden in der Mitte des Footers gruppiert
+///    (zentriert über die volle Breite, NICHT links-anliegend).
+///  - Der "Ausschalten"-Pill sitzt als eigenständig anklickbarer
+///    Akzent-Button rechts daneben — der gesamte Footer ist NICHT
+///    mehr tappable, weil der dedizierte Button die Aktion klarer
+///    kommuniziert als ein riesiger Tap-Bereich der die ganze
+///    Leiste umfasst.
+///  - Auf schmalen Devices (iPhone, < 600 dp Shortest-Side) wird
+///    nur "Sleep-Modus aktiv" angezeigt; der "Fortschritt wird
+///    nicht gespeichert"-Zusatz nur auf iPad und breiter.
+class _SleepModeFooter extends StatelessWidget {
+  const _SleepModeFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    // 600 dp shortestSide ist die kanonische iPhone/iPad-Grenze
+    // (Apple HIG + Flutter material breakpoints).
+    final isCompact = MediaQuery.of(context).size.shortestSide < 600;
+    final statusText = isCompact
+        ? 'Sleep-Modus aktiv'
+        : 'Sleep-Modus aktiv · Fortschritt wird nicht gespeichert';
+
+    return Material(
+      color: AppTheme.accent.withValues(alpha: 0.12),
+      child: SafeArea(
+        top: false,
+        child: Container(
+          // Schlanke 6 px vertikal — der Container schrumpft auf die
+          // natürliche Höhe seiner Row, die ihrerseits vom Pill-
+          // Button (~28 px) dominiert wird. Vorher 10 px war
+          // unnötig wuchtig.
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          decoration: const BoxDecoration(
+            border: Border(
+              top: BorderSide(color: AppTheme.accent, width: 1),
+            ),
+          ),
+          // Eine einzige Row mit mainAxisAlignment.center —
+          // Mond + Text + Pille wandern als kompakte Gruppe in
+          // die Bildschirmmitte mit fixen ästhetischen Abständen
+          // (10/12 px). Horizontal: durch mainAxisAlignment.center.
+          // Vertikal: durch Container-padding gepaart mit
+          // crossAxisAlignment.center (Default) auf der Row.
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.max,
+            children: [
+              const Icon(Icons.bedtime_rounded,
+                  color: AppTheme.accent, size: 17),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  statusText,
+                  style: const TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+              const SizedBox(width: 12),
+              _OffPillButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const SettingsScreen()),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Schlanke, ästhetische Akzent-Pille. Visuell ein eigenständiger
+/// Button, kein nackter Text-Link — die volle Akzentfläche samt
+/// rundem Border macht klar dass das ein echtes UI-Control ist
+/// das man tappen kann.
+class _OffPillButton extends StatelessWidget {
+  final VoidCallback onPressed;
+  const _OffPillButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.accent,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(14),
+        child: const Padding(
+          padding: EdgeInsets.fromLTRB(10, 5, 7, 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Ausschalten',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
+                ),
+              ),
+              SizedBox(width: 1),
+              Icon(Icons.chevron_right_rounded,
+                  color: Colors.white, size: 16),
+            ],
+          ),
+        ),
       ),
     );
   }

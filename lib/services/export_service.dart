@@ -77,6 +77,16 @@ class ExportService {
       );
     }
 
+    // iOS has no FFmpeg (sandbox forbids child processes). Clip export
+    // via AVAssetExportSession is planned for a later native phase —
+    // for now fail with a clear message instead of a mysterious error.
+    if (Platform.isIOS) {
+      return ExportResult.error(
+        'Clip-Export ist auf iPad noch nicht verfügbar — kommt in einem '
+        'späteren Update mit Apples nativer Video-Export-API.',
+      );
+    }
+
     final ffmpeg = await ThumbnailService.instance.findFFmpeg();
     if (ffmpeg == null) {
       return ExportResult.error(

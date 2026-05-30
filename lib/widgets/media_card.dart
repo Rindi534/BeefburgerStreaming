@@ -21,6 +21,16 @@ class MediaCard extends StatefulWidget {
 
 class _MediaCardState extends State<MediaCard> {
   bool _isHovered = false;
+  // Touch-down feedback: on iPad there's no hover, so we drive the same
+  // scale + play-icon overlay off a press state instead. On Windows both
+  // states coexist harmlessly — a mouse-click briefly shows press-scale
+  // on top of the already-scaled hover state (visually: a tiny squeeze
+  // on click), which actually reads as nice tactile feedback.
+  bool _isPressed = false;
+
+  // The card is "active" (show scaled + play badge) on either hover OR
+  // press. Hover is desktop-only, press covers the touch path on iPad.
+  bool get _isActive => _isHovered || _isPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -30,10 +40,13 @@ class _MediaCardState extends State<MediaCard> {
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: widget.onTap,
+        onTapDown: (_) => setState(() => _isPressed = true),
+        onTapUp: (_) => setState(() => _isPressed = false),
+        onTapCancel: () => setState(() => _isPressed = false),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
-          transform: _isHovered ? (Matrix4.identity()..setEntry(0, 0, 1.05)..setEntry(1, 1, 1.05)..setEntry(2, 2, 1.05)) : Matrix4.identity(),
+          transform: _isActive ? (Matrix4.identity()..setEntry(0, 0, 1.05)..setEntry(1, 1, 1.05)..setEntry(2, 2, 1.05)) : Matrix4.identity(),
           transformAlignment: Alignment.center,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -88,8 +101,9 @@ class _MediaCardState extends State<MediaCard> {
                             ),
                           ),
                         ),
-                      // Hover play icon
-                      if (_isHovered)
+                      // Hover/press play icon — shown on desktop hover
+                      // or during the touch press on iPad.
+                      if (_isActive)
                         Center(
                           child: Container(
                             padding: const EdgeInsets.all(12),

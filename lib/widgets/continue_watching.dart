@@ -371,18 +371,26 @@ class _ContinueWatchingCard extends StatefulWidget {
 
 class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
   bool _isHovered = false;
+  // Touch-press state so iPad gets the same scale feedback — hover
+  // events never fire on a touchscreen. See MediaCard for the full
+  // rationale; behavior on desktop is unchanged.
+  bool _isPressed = false;
 
   @override
   Widget build(BuildContext context) {
+    final active = _isHovered || _isPressed;
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: widget.onTap,
+        onTapDown: (_) => setState(() => _isPressed = true),
+        onTapUp: (_) => setState(() => _isPressed = false),
+        onTapCancel: () => setState(() => _isPressed = false),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          transform: _isHovered ? (Matrix4.identity()..setEntry(0, 0, 1.03)..setEntry(1, 1, 1.03)..setEntry(2, 2, 1.03)) : Matrix4.identity(),
+          transform: active ? (Matrix4.identity()..setEntry(0, 0, 1.03)..setEntry(1, 1, 1.03)..setEntry(2, 2, 1.03)) : Matrix4.identity(),
           transformAlignment: Alignment.center,
           width: 280,
           margin: const EdgeInsets.only(right: 16),

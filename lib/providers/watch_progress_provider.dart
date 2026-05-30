@@ -47,12 +47,22 @@ class WatchProgressNotifier extends StateNotifier<List<WatchProgress>> {
     final eligible = state
         .where((p) => (p.hasStarted || p.position == Duration.zero) && !p.isCompleted)
         .toList();
-    // Deduplicate: keep only the most recent entry per mediaId
+    // Dedupe per Serie. Der iOS-VLC-Player mutiert bei Episoden-
+    // Wechsel `mediaId` zu `<serienId>::<episodePath>`, damit Watch-
+    // Progress pro Episode gespeichert werden kann. Für Continue-
+    // Watching wollen wir aber nur EINEN Eintrag pro Serie sehen —
+    // also dedupen wir auf den Präfix VOR `::` (bei Filmen ohne "::"
+    // bleibt die gesamte mediaId der Key, was korrekt ist).
+    String seriesKey(String rawMediaId) {
+      final idx = rawMediaId.indexOf('::');
+      return idx > 0 ? rawMediaId.substring(0, idx) : rawMediaId;
+    }
     final Map<String, WatchProgress> latest = {};
     for (final p in eligible) {
-      final existing = latest[p.mediaId];
+      final key = seriesKey(p.mediaId);
+      final existing = latest[key];
       if (existing == null || p.lastWatched.isAfter(existing.lastWatched)) {
-        latest[p.mediaId] = p;
+        latest[key] = p;
       }
     }
     final result = latest.values.toList()

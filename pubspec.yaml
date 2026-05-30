@@ -1,7 +1,10 @@
 name: beefburger_streaming
 description: "BeefburgerStreaming — deine lokale Streaming-Plattform für Filme und Serien."
 publish_to: 'none'
-version: 1.5.50+55
+# Unified version after master ↔ ios-support merge. Master was at
+# 1.5.50, ios-support at 1.9.13 — wir nehmen die größere Schiene
+# und ziehen Windows mit. +111 als Build-Counter über beiden.
+version: 1.9.14+111
 
 environment:
   sdk: ^3.11.4
@@ -14,6 +17,8 @@ dependencies:
   media_kit_video: ^1.2.5
   media_kit_libs_video: ^1.0.5
   media_kit_libs_windows_video: ^1.0.10
+  # iOS backend for media_kit — used as fallback on iPhone/iPad builds.
+  media_kit_libs_ios_video: ^1.1.4
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   flutter_riverpod: ^2.5.1
@@ -22,18 +27,15 @@ dependencies:
   path: ^1.9.0
   google_fonts: ^6.2.1
   window_manager: ^0.4.3
-  # Needed by the borderless-fullscreen path in FullscreenService:
-  # we query the current display's full pixel bounds (including the
-  # area Windows reserves for the taskbar) so the window can be
-  # sized to cover EVERY pixel. window_manager only exposes window
-  # bounds, not monitor bounds — screen_retriever fills that gap.
+  # Borderless-fullscreen path on Windows (query monitor pixel bounds).
   screen_retriever: ^0.2.0
-  # Used by FullscreenService to call Windows 11 DWM APIs directly
-  # (DwmSetWindowAttribute with DWMWCP_DONOTROUND) to suppress the
-  # window's rounded corners during borderless fullscreen — so the
-  # window can be sized to EXACTLY the monitor without losing any
-  # pixels to corner-overshoot.
+  # Windows 11 DWM APIs via dart:ffi for borderless fullscreen.
   ffi: ^2.1.0
+  # iOS-only: native AVAssetImageGenerator wrapper for thumbnails.
+  video_thumbnail: ^0.5.3
+  # Cross-platform "open file / share" — iOS uses it because
+  # Process.start('explorer') is sandbox-forbidden there.
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:

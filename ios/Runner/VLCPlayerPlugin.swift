@@ -1,0 +1,711 @@
+// VLCPlayerPlugin.swift
+//
+// Zweiter Video-Backend neben NativePlayerPlugin.swift. Zuständig für
+// Container/Codec-Kombis, die AVPlayer nicht nativ lesen kann — .mkv,
+// .avi, .iso, .wmv, .flv. MobileVLCKit bringt seinen eigenen Decoder
+// (libavcodec) mit, UND hat seit Version 3.5 PiP-Support über die
+// AVPictureInPictureController.ContentSource-API eingebaut — das ist
+// der Hauptgrund warum wir VLCKit nehmen statt reinem libmpv: die
+// ganze CMSampleBuffer-Pipeline mussten wir nicht selbst bauen.
+//
+// Wichtig: Dart-Seite bleibt identisch zum NativePlayerPlugin-Interface.
+// Gleiche MethodChannel-Namen ("play", "pause", "seek", "replaceMedia",
+// "dispose"), gleiche Event-Payloads ("position", "duration",
+// "playing", "completed", "error"). So kann der IOSPlayerScreen beide
+// Backends mit derselben Controller-Abstraktion ansprechen — nur der
+// viewType-String bei UiKitView entscheidet, welches Plugin Flutter
+// erzeugt. Session 2 baut PiP ein; diese Session liefert reines
+// Playback.
+
+import Flutter
+import MobileVLCKit
+import UIKit
+import AVKit
+import AVFoundation
+
+// MARK: - Plugin registration
+
+public class VLCPlayerPlugin: NSObject, FlutterPlugin {
+    public static func register(with registrar: FlutterPluginRegistrar) {
+        let factory = VLCPlayerViewFactory(messenger: registrar.messenger())
+        registrar.register(factory, withId: "beefburger/vlc_player")
+    }
+}
+
+// MARK: - Platform-view factory
+
+class VLCPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
+    private let messenger: FlutterBinaryMessenger
+
+    init(messenger: FlutterBinaryMessenger) {
+        self.messenger = messenger
+        super.init()
+    }
+
+    func create(withFrame frame: CGRect,
+                viewIdentifier viewId: Int64,
+                arguments args: Any?) -> FlutterPlatformView {
+        return VLCPlayerView(
+            frame: frame,
+            viewId: viewId,
+            args: args as? [String: Any] ?? [:],
+            messenger: messenger
+        )
+    }
+
+    func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
+        return FlutterStandardMessageCodec.sharedInstance()
+    }
+}
+
+// MARK: - Platform view instance
+
+class VLCPlayerView: NSObject, FlutterPlatformView {
+    private let container: UIView
+    private let mediaPlayer: VLCMediaPlayer
+    private let viewId: Int64
+
+    /// Sub-Render-View. libvlc rendert hier IM PARALLEL zur memory-
+    /// output-Pipeline (vmem) hinein — falls libvlc beides
+    /// gleichzeitig supportet, sehen wir hier das Bild MIT
+    /// eingebrannten Untertiteln, während die DisplayLayer (für PiP)
+    /// vom vmem ohne Subs gefüttert wird. Liegt ÜBER der DisplayLayer
+    /// im container, mit transparentem Hintergrund — wenn libvlc das
+    /// drawable ignoriert (callbacks gewinnen), bleibt die Layer
+    /// transparent und die DisplayLayer scheint durch.
+    private let subRenderView: UIView
+
+    private let methodChannel: FlutterMethodChannel
+    private let eventChannel: FlutterEventChannel
+    private let eventSink = VLCEventSinkProxy()
+
+    // VLC emittiert "nowPlaying"-Events hochfrequent; wir drosseln
+    // position-Updates auf 5 Hz, analog zum 200 ms Intervall im
+    // NativePlayerPlugin. Ohne Drosselung fluten wir den Dart-
+    // EventChannel mit ~30 Pro-Sekunde-Updates.
+    private var lastPositionEmit: TimeInterval = 0
+    fileprivate var lastNowPlayingUpdate: TimeInterval = 0
+
+    // Wir merken uns die angefragte Resume-Position bis zum Zeitpunkt
+    // an dem VLC bereit ist zu springen. VLCMediaPlayer akzeptiert
+    // seek erst nach dem "Playing"-State (vorher ist die Media-Länge
+    // noch unbekannt).
+    private var pendingStartSeconds: Double = 0
+    private var didApplyStartSeek: Bool = false
+
+    // PiP-Koordinator — opt-in konstruiert, nur auf iOS 15+, weil die
+    // ContentSource(sampleBufferDisplayLayer:...)-API erst dort
+    // existiert. Unter iOS 15 gibt's auf dem VLC-Pfad kein PiP; der
+    // AVPlayer-Pfad für .mp4 bleibt davon unberührt.
+    private var pipCoordinator: AnyObject?
+
+    init(frame: CGRect,
+         viewId: Int64,
+         args: [String: Any],
+         messenger: FlutterBinaryMessenger) {
+        self.viewId = viewId
+        self.container = UIView(frame: frame)
+        self.container.backgroundColor = .black
+
+        // SubRenderView mit transparentem Hintergrund. Falls libvlc
+        // den drawable-Pfad parallel zu unseren memory-callbacks
+        // bedient, rendert es hier rein — wir sehen Video MIT Subs.
+        // Wenn libvlc den drawable ignoriert (vmem-callbacks
+        // gewinnen) bleibt die View transparent.
+        self.subRenderView = UIView(frame: frame)
+        self.subRenderView.backgroundColor = .clear
+        self.subRenderView.isOpaque = false
+        self.subRenderView.contentMode = .scaleAspectFit
+
+        // VLCMediaPlayer mit player-level libvlc-options. Anders als
+        // media.addOption() werden DIESE Options beim Modul-Init des
+        // Players gelesen — inkl. der vout-side freetype-Renderer-
+        // Konfig. v1.9.3 bestätigte: die Options greifen jetzt
+        // (User-Feedback: Subs winzig).
+        //
+        // Größen-Kalibration:
+        //   - freetype-fontsize ist absolut in Pixeln (vor dem
+        //     Layer-Scaling auf Display-Größe).
+        //   - 60 px → bei AVSampleBufferDisplayLayer-Scaling von
+        //     1080p → iPhone-Display (~390 px Breite, also ~5x
+        //     downscale) ergibt das ~12 px effektiv auf dem Screen.
+        //     Etwas größer als Apples Default aber lesbar.
+        //   - sub-text-scale UND freetype-rel-fontsize raus damit
+        //     nur EIN Pfad die Größe bestimmt und nicht mehrere
+        //     übereinander multiplizieren.
+        let playerOptions: [String] = [
+            "--freetype-fontsize=60",
+            // VLCs Audio-Time-Stretch-Engine bei jedem pause/play
+            // teardown'd — Init kostet 300-500 ms und produziert
+            // den hörbaren Audio-Lag nach Resume. Deaktivieren weil
+            // wir die Rate eh nicht zur Laufzeit ändern.
+            "--no-audio-time-stretch",
+        ]
+        self.mediaPlayer = VLCMediaPlayer(options: playerOptions)
+
+        // libvlc-internes Logging anschalten — wir bekommen alle
+        // Decoder/Vout/SPU-Messages in eine Datei in App-Support.
+        // Hilft uns endlich zu sehen WARUM Subs nicht composited
+        // werden, statt zu raten.
+        VLCLibvlcLogger.attach()
+
+        let channelSuffix = "\(viewId)"
+        self.methodChannel = FlutterMethodChannel(
+            name: "beefburger/vlc_player/methods/\(channelSuffix)",
+            binaryMessenger: messenger
+        )
+        self.eventChannel = FlutterEventChannel(
+            name: "beefburger/vlc_player/events/\(channelSuffix)",
+            binaryMessenger: messenger
+        )
+
+        super.init()
+
+        // AVAudioSession auf "playback" fixieren und aktiv halten.
+        // Ohne diesen Call deaktiviert iOS die Session nach ein paar
+        // Sekunden Pause → beim Resume muss der AudioUnit erst wieder
+        // hochfahren, was den hörbaren Audio-Lag ~400-600ms produziert
+        // hat. Mit aktiver Session bleibt der AudioUnit primed.
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback,
+                                    options: [])
+            try session.setActive(true, options: [])
+        } catch {
+            // Nicht fatal — VLCKit fällt ohne unseren Setup auf den
+            // default Session-Mode zurück. Der Audio-Lag ist dann
+            // wieder da, aber Playback funktioniert.
+        }
+
+        // mediaPlayer.drawable wird gesetzt — Test ob libvlc PARALLEL
+        // zum vmem-output (durch VLCFramePump unten) auch den drawable
+        // bedient. Wenn ja: subRenderView zeigt Video mit eingebrannten
+        // Untertiteln, vmem füttert weiter unsere DisplayLayer für PiP.
+        // Wenn libvlc nur eines bedient (typisch vmem wenn callbacks
+        // gesetzt), bleibt subRenderView transparent — kein Bruch.
+        self.mediaPlayer.drawable = self.subRenderView
+        self.mediaPlayer.delegate = self
+
+        self.eventChannel.setStreamHandler(self.eventSink)
+        self.methodChannel.setMethodCallHandler { [weak self] call, result in
+            self?.handleMethodCall(call, result: result)
+        }
+
+        // subRenderView OBEN in der Container-View — über der vom
+        // PiP-Coordinator eingehängten DisplayLayer. Wenn libvlc
+        // beides bedient, sieht der User libvlc-Render mit Subs.
+        // Wenn nur callbacks bedient werden, bleibt subRenderView
+        // transparent und die DisplayLayer scheint durch.
+        self.subRenderView.frame = self.container.bounds
+        self.subRenderView.autoresizingMask =
+            [.flexibleWidth, .flexibleHeight]
+        self.container.addSubview(self.subRenderView)
+
+        // PiP-Coordinator: hängt VLCFramePump (libvlc-Frame-Callbacks)
+        // an den Player und mounted die AVSampleBufferDisplayLayer
+        // in self.container. Foreground-Render UND PiP-Source sind
+        // ab hier identisch.
+        if #available(iOS 15.0, *) {
+            let coord = VLCPiPCoordinator()
+            coord.attach(to: self.mediaPlayer, hostView: self.container)
+            coord.onPiPStateChanged = { [weak self] active in
+                self?.eventSink.send([
+                    "event": "pipState",
+                    "value": active,
+                ])
+            }
+            coord.onPiPAvailabilityChanged = { [weak self] possible in
+                self?.eventSink.send([
+                    "event": "pipAvailability",
+                    "value": possible,
+                ])
+            }
+            coord.onFormatDiagnostic = { [weak self] info in
+                self?.eventSink.send([
+                    "event": "formatDiag",
+                    "info": info,
+                ])
+            }
+            self.pipCoordinator = coord
+        } else {
+            // Kein PiP verfügbar → Dart-Seite proaktiv informieren,
+            // sonst wartet der UI-Layer ewig auf ein pipAvailability-
+            // Event und der Button bleibt grau (was akzeptabel ist,
+            // aber so ist's explizit).
+            self.eventSink.send([
+                "event": "pipAvailability",
+                "value": false,
+            ])
+        }
+
+        // Optional: Initial-Media in creationParams. Anders als beim
+        // AVPlayer-Plugin starten wir hier NICHT direkt autoplay im
+        // Konstruktor — MobileVLCKit braucht einen Moment um die
+        // drawable-View zu mounten, und ein zu früher play()-Call
+        // produziert gelegentlich einen leeren schwarzen Frame. Der
+        // Auto-Play-Aufruf passiert stattdessen in loadMedia() selbst,
+        // direkt nach dem Attach.
+        if let urlString = args["mediaUrl"] as? String {
+            let subtitle = args["subtitleUrl"] as? String
+            let start = args["startSeconds"] as? Double ?? 0
+            self.loadMedia(urlString: urlString,
+                           subtitleUrl: subtitle,
+                           startSeconds: start)
+        }
+    }
+
+    func view() -> UIView { return container }
+
+    // MARK: - Media loading
+
+    private func loadMedia(urlString: String,
+                           subtitleUrl: String?,
+                           startSeconds: Double) {
+        guard let url = resolveUrl(urlString) else {
+            eventSink.send(["event": "error",
+                            "message": "Ungültiger Pfad: \(urlString)"])
+            return
+        }
+
+        // VLCMediaPlayer's setter `media =` ruft intern stop() auf —
+        // explizit stop davor ist nicht nötig. Mit der neuen Pump-
+        // Pipeline (libvlc_video_set_callbacks) bleibt unsere
+        // CVPixelBuffer-Senke auch über den Stop-Restart-Zyklus
+        // erhalten; libvlc fragt einfach beim nächsten format_setup
+        // einen neuen Pool an.
+
+        let media = VLCMedia(url: url)
+
+        // Datei-Caching-Buffer (ms). Niedrig halten (300ms) damit
+        // Pause→Play-Resume nicht wartet bis der Buffer aufgefüllt ist
+        // — das war die Haupt-Ursache für den hörbaren Audio-Lag nach
+        // Pause in 1.5.25. Für lokale Dateien ist der Buffer ohnehin
+        // trivial zu füllen (Disk-I/O ist schneller als Real-Time-
+        // Playback), ein großer Vorrat bringt nichts außer Latenz.
+        media.addOption(":file-caching=300")
+        media.addOption(":verbose=3")
+        // ───── DER eigentliche Subtitle-Fix (v1.8.7) ──────────────────
+        // libvlc-Log v1.8.6 hat die Ursache enthüllt:
+        //   "forcing CVPX format: 420v"
+        //   "Using Video Toolbox to decode 'hevc'"
+        //   "no matching alpha blending routine (chroma: YUVA -> CVPN)"
+        //
+        // iOS-VideoToolbox-HW-Decoder zwingt das Decoder-Output-Format
+        // auf CVPN (Apples natives NV12). libvlcs SPU-Blender läuft
+        // VOR der Filter-Chain die wir mit :format-setup-cb steuern —
+        // der Blender muss in CVPN blenden, und genau DEN Blender hat
+        // MobileVLCKits libvlc-Build nicht.
+        //
+        // Lösung: VideoToolbox deaktivieren, libvlc nutzt dann avcodec
+        // (Software-Decoder), der gibt I420 aus, libvlc HAT
+        // YUVA→I420-Blender → SPU wird ins Frame eingebrannt.
+        //
+        // Trade-off: HEVC Software-Decoding ist langsamer als Hardware
+        // (auf A12+ aber problemlos). Wert es für Subs.
+        media.addOption(":codec=avcodec")
+        // Subtitle-Größe — sub-text-scale=60 + rel-fontsize=40
+        // hatten beide keinen Effekt im User-Test. MobileVLCKits
+        // libvlc-Build ignoriert die offenbar still.
+        //
+        // Diesmal mit `:freetype-fontsize=N` (absoluter Pixel-Wert
+        // statt Verhältnis) UND `:sub-text-scale=40` (noch deutlich
+        // niedriger). Plus `:ass-default-font-size` für embedded
+        // ASS-Subs. Falls libvlc auch DAS ignoriert, ist's wirklich
+        // hardcoded und ich muss einen anderen Pfad bauen
+        // (zb subtitle delegate selbst rendern).
+        media.addOption(":freetype-fontsize=20")
+        media.addOption(":sub-text-scale=40")
+        media.addOption(":ass-default-font-size=20")
+
+        didApplyStartSeek = false
+        pendingStartSeconds = startSeconds
+
+        mediaPlayer.media = media
+
+        // Externe Subtitle — VLC kann .srt/.ass/.vtt out-of-the-box.
+        // Das ist ein harter Gewinn gegenüber dem AVPlayer-Pfad, wo
+        // .srt nicht direkt geht.
+        if let sub = subtitleUrl, !sub.isEmpty {
+            let subUrl = URL(fileURLWithPath: sub)
+            // addPlaybackSlave existiert seit VLCKit 3.x. false bei
+            // "autoPlay" damit VLC nicht ungefragt die Slave-Spur
+            // erzwingt — wir lassen den User in der UI wählen.
+            mediaPlayer.addPlaybackSlave(
+                subUrl, type: .subtitle, enforce: false)
+        }
+
+        mediaPlayer.play()
+    }
+
+    private func resolveUrl(_ s: String) -> URL? {
+        if s.hasPrefix("file://") || s.hasPrefix("http") {
+            return URL(string: s)
+        }
+        return URL(fileURLWithPath: s)
+    }
+
+    // MARK: - Method dispatch
+
+    private func handleMethodCall(_ call: FlutterMethodCall,
+                                  result: @escaping FlutterResult) {
+        switch call.method {
+        case "play":
+            // AVAudioSession explizit reaktivieren BEVOR play()
+            // läuft. iOS deaktiviert die Session typischerweise
+            // nach ein paar Sekunden Pause — beim Resume muss der
+            // AudioUnit sonst neu hochgefahren werden, was den
+            // 1-1.5s Audio-Lag produziert den der User in v1.9.4
+            // gemeldet hat. Mit dem expliziten setActive bleibt
+            // die Session warm.
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback,
+                                        mode: .moviePlayback,
+                                        options: [])
+                try session.setActive(true, options: [])
+            } catch {
+                // Nicht fatal — VLC fällt auf Default zurück, Lag
+                // ist dann wieder da, aber Playback funktioniert.
+            }
+            mediaPlayer.play()
+            result(nil)
+        case "pause":
+            mediaPlayer.pause()
+            result(nil)
+        case "seek":
+            guard let args = call.arguments as? [String: Any],
+                  let seconds = args["seconds"] as? Double else {
+                result(FlutterError(code: "bad_args",
+                                    message: "seek needs seconds",
+                                    details: nil))
+                return
+            }
+            seek(toSeconds: seconds)
+            result(nil)
+        case "setVolume":
+            if let args = call.arguments as? [String: Any],
+               let v = args["volume"] as? Double {
+                // VLC-Range ist 0–200 (100 = unity, darüber Boost).
+                // Wir clampen auf 0–1 und mappen auf 0–100.
+                let clamped = max(0, min(1, v))
+                mediaPlayer.audio?.volume = Int32(clamped * 100)
+            }
+            result(nil)
+        case "setRate":
+            if let args = call.arguments as? [String: Any],
+               let r = args["rate"] as? Double {
+                mediaPlayer.rate = Float(r)
+            }
+            result(nil)
+        case "replaceMedia":
+            // Auto-Next-Pfad. Mit der neuen Pump-Pipeline ist das
+            // ein simpler Setter-Aufruf — die libvlc-Callbacks
+            // bleiben gesetzt, bei stop+restart fragt libvlc beim
+            // nächsten format_setup einfach einen neuen CVPixelBuffer-
+            // Pool an. Kein vout-Teardown, kein Drawable-Kick mehr.
+            guard let args = call.arguments as? [String: Any],
+                  let media = args["mediaUrl"] as? String else {
+                result(FlutterError(code: "bad_args",
+                                    message: "replaceMedia needs mediaUrl",
+                                    details: nil))
+                return
+            }
+            let sub = args["subtitleUrl"] as? String
+            let start = (args["startSeconds"] as? Double) ?? 0
+            loadMedia(urlString: media,
+                      subtitleUrl: sub,
+                      startSeconds: start)
+            result(nil)
+        case "startPiP":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.startPiP()
+                result(nil)
+            } else {
+                result(FlutterError(code: "unavailable",
+                                    message: "PiP braucht iOS 15+",
+                                    details: nil))
+            }
+        case "stopPiP":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.stopPiP()
+            }
+            result(nil)
+        case "getAudioTracks":
+            result(collectTracks(
+                ids: mediaPlayer.audioTrackIndexes,
+                names: mediaPlayer.audioTrackNames,
+                current: mediaPlayer.currentAudioTrackIndex))
+        case "getSubtitleTracks":
+            result(collectTracks(
+                ids: mediaPlayer.videoSubTitlesIndexes,
+                names: mediaPlayer.videoSubTitlesNames,
+                current: mediaPlayer.currentVideoSubTitleIndex))
+        case "setAudioTrack":
+            if let args = call.arguments as? [String: Any],
+               let id = args["id"] as? Int {
+                mediaPlayer.currentAudioTrackIndex = Int32(id)
+            }
+            result(nil)
+        case "setSubtitleTrack":
+            // id = -1 schaltet Untertitel aus (VLC-Konvention).
+            //
+            // Wir setzen den Track auf BEIDEN Pfaden:
+            //   1. MobileVLCKits Setter (für interne Konsistenz —
+            //      `currentVideoSubTitleIndex` wird in der UI ausgelesen).
+            //   2. Direkter libvlc_video_set_spu — das ist der Pfad der
+            //      tatsächlich auf den vmem-Vout-Renderer durchschlägt.
+            //      In MobileVLCKit 3.5 wirkt der ObjC-Setter mit unserer
+            //      Frame-Pump-Pipeline nicht zuverlässig.
+            //
+            // Diagnose-Snackbar geht via "subDebug"-Event mit dem libvlc-
+            // Status, damit ich am iPhone sehen kann was wirklich passiert.
+            if let args = call.arguments as? [String: Any],
+               let id = args["id"] as? Int {
+                mediaPlayer.currentVideoSubTitleIndex = Int32(id)
+                var libvlcOk = false
+                var libvlcCurrent = -1
+                if #available(iOS 15.0, *),
+                   let coord = pipCoordinator as? VLCPiPCoordinator {
+                    libvlcOk = coord.setSubtitleTrackViaLibvlc(id)
+                    libvlcCurrent = coord.currentSubtitleTrackViaLibvlc
+                }
+                NSLog("[VLCPlayer] setSubtitleTrack: id=\(id) " +
+                      "wrapper=\(mediaPlayer.currentVideoSubTitleIndex) " +
+                      "libvlc-set=\(libvlcOk) libvlc-current=\(libvlcCurrent)")
+                eventSink.send([
+                    "event": "subDebug",
+                    "requestedId": id,
+                    "wrapperCurrent": Int(mediaPlayer.currentVideoSubTitleIndex),
+                    "libvlcSetOk": libvlcOk,
+                    "libvlcCurrent": libvlcCurrent,
+                ])
+            }
+            result(nil)
+        case "isPiPPossible":
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                result(coord.isPiPPossible)
+            } else {
+                result(false)
+            }
+        case "getLibvlcLog":
+            // Diagnose: liefert die letzten ~50 KB des libvlc-internen
+            // Logs an Dart zurück damit wir das in der UI anzeigen
+            // können.
+            result(VLCLibvlcLogger.readLogTail())
+        case "setNowPlayingInfo":
+            // Lockscreen-/Control-Center-Karte aktivieren mit dem
+            // aktuellen Episoden-Titel, Cover etc. Wird von Dart
+            // gerufen sobald wir den richtigen Titel und Cover-Pfad
+            // wissen (etwa nach _onReady).
+            if let args = call.arguments as? [String: Any] {
+                let title = args["title"] as? String ?? "Wiedergabe"
+                let artist = args["artist"] as? String
+                let artworkPath = args["artworkPath"] as? String
+                let duration = (args["duration"] as? Double) ?? 0
+                NowPlayingHelper.shared.configure(
+                    player: mediaPlayer,
+                    title: title,
+                    artist: artist,
+                    artworkPath: artworkPath,
+                    duration: duration
+                )
+                // Routet Lockscreen-Next-/Prev-Track-Buttons an Dart.
+                NowPlayingHelper.shared.onNextTrack = { [weak self] in
+                    self?.eventSink.send(["event": "remoteNextTrack"])
+                }
+                NowPlayingHelper.shared.onPreviousTrack = { [weak self] in
+                    self?.eventSink.send(["event": "remotePreviousTrack"])
+                }
+            }
+            result(nil)
+        case "dispose":
+            // Reihenfolge KRITISCH (Crash-Bug v1.6.3 — picture_CopyPixels
+            // → memmove → far=0 in libvlcs Decoder-Thread während
+            // wir den Pool schon weggeräumt hatten):
+            //
+            //   1. delegate = nil  → keine .stopped-Notifications mehr.
+            //   2. coord.detach() → libvlc_video_set_callbacks(NULL).
+            //      Stoppt NEUE Callback-Aufrufe. POOL bleibt am Leben.
+            //   3. mediaPlayer.stop() → libvlc-Decoder-Thread joined,
+            //      KEINE neuen picture_CopyPixels mehr in flight.
+            //   4. pipCoordinator = nil → erst JETZT wird der pump
+            //      released → CVPixelBufferPool freigegeben. Da libvlc
+            //      durch ist, ist's sicher die Memory rauszuwerfen.
+            mediaPlayer.delegate = nil
+            NowPlayingHelper.shared.clear()
+            if #available(iOS 15.0, *),
+               let coord = pipCoordinator as? VLCPiPCoordinator {
+                coord.detach()
+            }
+            mediaPlayer.stop()
+            pipCoordinator = nil
+            result(nil)
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
+
+    /// Helper: baut eine Liste aus [{id, name, isCurrent}] Dicts aus den
+    /// parallelen Arrays die MobileVLCKit zurückgibt (IDs und Namen
+    /// kommen separat; die Reihenfolge zwischen den beiden Arrays
+    /// korrespondiert). VLC-Konvention: id = -1 bedeutet
+    /// "deaktiviert"/"keine Spur".
+    private func collectTracks(ids: [Any]?,
+                               names: [Any]?,
+                               current: Int32) -> [[String: Any]] {
+        guard let ids = ids, let names = names else { return [] }
+        let count = min(ids.count, names.count)
+        var out: [[String: Any]] = []
+        for i in 0..<count {
+            let idValue: Int
+            if let n = ids[i] as? NSNumber {
+                idValue = n.intValue
+            } else {
+                continue
+            }
+            let nameValue = (names[i] as? String) ?? "Track \(idValue)"
+            out.append([
+                "id": idValue,
+                "name": nameValue,
+                "isCurrent": idValue == Int(current),
+            ])
+        }
+        return out
+    }
+
+    private func seek(toSeconds seconds: Double) {
+        // VLCMediaPlayer.time ist in Millisekunden, als VLCTime.
+        let target = VLCTime(int: Int32(seconds * 1000))
+        mediaPlayer.time = target
+    }
+
+    // MARK: - Lifecycle
+
+    deinit {
+        // Identische Reihenfolge wie im "dispose" MethodCall — siehe
+        // Erklärung dort. Kurzform: delegate=nil → callbacks=NULL →
+        // stop → erst dann den Coord/Pump released.
+        mediaPlayer.delegate = nil
+        NowPlayingHelper.shared.clear()
+        if #available(iOS 15.0, *),
+           let coord = pipCoordinator as? VLCPiPCoordinator {
+            coord.detach()
+        }
+        mediaPlayer.stop()
+        pipCoordinator = nil
+    }
+}
+
+// MARK: - VLCMediaPlayerDelegate
+
+extension VLCPlayerView: VLCMediaPlayerDelegate {
+    func mediaPlayerStateChanged(_ aNotification: Notification) {
+        // VLC-States: opening, buffering, playing, paused, stopped,
+        // ended, error, esAdded.
+        switch mediaPlayer.state {
+        case .playing:
+            eventSink.send(["event": "playing", "value": true])
+
+            // Erstmal nach "playing" ist media.length verlässlich.
+            // Hier emittieren wir die Dauer + applyen eine pending
+            // Resume-Position genau einmal.
+            let durMs = mediaPlayer.media?.length.intValue ?? 0
+            if durMs > 0 {
+                eventSink.send([
+                    "event": "duration",
+                    "seconds": Double(durMs) / 1000.0,
+                ])
+            }
+            if !didApplyStartSeek && pendingStartSeconds > 0 {
+                didApplyStartSeek = true
+                seek(toSeconds: pendingStartSeconds)
+            }
+        case .paused:
+            eventSink.send(["event": "playing", "value": false])
+        case .stopped:
+            eventSink.send(["event": "playing", "value": false])
+        case .ended:
+            // VLC markiert das Ende über "ended" — wir mappen das auf
+            // unser Standard-"completed"-Event, damit Dart den
+            // identischen Auto-Next-Pfad laufen lassen kann wie beim
+            // AVPlayer-Backend.
+            eventSink.send(["event": "completed"])
+        case .error:
+            eventSink.send([
+                "event": "error",
+                "message": "VLC konnte die Datei nicht öffnen.",
+            ])
+        default:
+            break
+        }
+    }
+
+    func mediaPlayerTimeChanged(_ aNotification: Notification) {
+        let now = Date().timeIntervalSince1970
+        // 30 Hz (33ms) — 10 Hz sah am Slider noch stufig aus, trotz
+        // Tween-Interpolation auf Dart-Seite. 30 Hz ist dicht genug
+        // an der Display-Refresh-Rate dass der Flutter-Tween die
+        // verbleibenden Frames unsichtbar überbrückt. EventChannel
+        // kommt mit der Rate locker klar (~300 Bytes/event).
+        // 60 Hz (16ms). v1.5.29 lag bei 33ms/30Hz; User hat "noch
+        // flüssiger" gefordert. Über 60Hz geht nicht sinnvoll — die
+        // Flutter-UI rendert ebenfalls bei 60Hz (bzw. 120Hz auf ProMotion),
+        // schneller emittieren würde nur EventChannel-Traffic verbrennen
+        // ohne sichtbaren Gewinn.
+        if now - lastPositionEmit < 0.016 { return }
+        lastPositionEmit = now
+        let ms = mediaPlayer.time.intValue
+        if ms >= 0 {
+            eventSink.send([
+                "event": "position",
+                "seconds": Double(ms) / 1000.0,
+            ])
+            // Lockscreen-Karte mit aktueller Position updaten —
+            // Apple ratet dazu nur sparsam zu updaten (Now-Playing
+            // ist nicht für 60 Hz designed). Wir machen es alle ~250ms
+            // statt jedes Position-Event.
+            if now - lastNowPlayingUpdate >= 0.25 {
+                lastNowPlayingUpdate = now
+                NowPlayingHelper.shared.updateState(
+                    elapsed: Double(ms) / 1000.0,
+                    isPlaying: mediaPlayer.isPlaying)
+            }
+        }
+    }
+
+}
+
+// MARK: - Event sink proxy
+
+/// Buffert Events die anfallen bevor Dart den EventChannel attached
+/// hat. Identisch zur NativePlayerPlugin-Variante (EventSinkProxy),
+/// separat deklariert um keine Namenskollision zu riskieren und damit
+/// jedes Plugin unabhängig geupdated werden kann.
+class VLCEventSinkProxy: NSObject, FlutterStreamHandler {
+    private var sink: FlutterEventSink?
+    private var pending: [[String: Any]] = []
+
+    func onListen(withArguments arguments: Any?,
+                  eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        self.sink = events
+        for e in pending { events(e) }
+        pending.removeAll()
+        return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        self.sink = nil
+        return nil
+    }
+
+    func send(_ payload: [String: Any]) {
+        if let s = sink {
+            s(payload)
+        } else {
+            pending.append(payload)
+        }
+    }
+}
