@@ -9,6 +9,7 @@ import '../models/watch_progress.dart';
 import '../providers/media_library_provider.dart';
 import '../providers/watch_progress_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/fullscreen_service.dart';
 import '../widgets/cache_changes_dialog.dart';
 import '../widgets/media_card.dart';
 import '../widgets/continue_watching.dart';
@@ -140,17 +141,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return _buildSetupScreen(context, ref);
     }
 
+    // F / F11 als Vollbild-Hotkey für die ganze App — analog zum
+    // Player. FocusableActionDetector mit autofocus packt das Body
+    // in einen Focus-Scope, der Shortcuts nur abfeuert wenn kein
+    // Text-Feld (z. B. die Suchleiste) gerade Focus hat. F im
+    // Suchfeld → tippt "f" wie erwartet; F außerhalb → toggelt
+    // Vollbild. F11 wird von Text-Feldern nicht beansprucht, also
+    // funktioniert die immer.
     return Scaffold(
-      body: SafeArea(
-        child: library.isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: AppTheme.accent),
-              )
-            : library.error != null
-                ? _buildErrorState(context, ref, library.error!)
-                : library.items.isEmpty
-                    ? _buildEmptyState(context, ref)
-                    : _buildLibrary(context, ref, library, continueWatching),
+      body: FocusableActionDetector(
+        autofocus: true,
+        shortcuts: const <ShortcutActivator, Intent>{
+          SingleActivator(LogicalKeyboardKey.f11): _ToggleFullscreenIntent(),
+          SingleActivator(LogicalKeyboardKey.keyF): _ToggleFullscreenIntent(),
+        },
+        actions: <Type, Action<Intent>>{
+          _ToggleFullscreenIntent: CallbackAction<_ToggleFullscreenIntent>(
+            onInvoke: (_) {
+              FullscreenService.toggle();
+              return null;
+            },
+          ),
+        },
+        child: SafeArea(
+          child: library.isLoading
+              ? const Center(
+                  child: CircularProgressIndicator(color: AppTheme.accent),
+                )
+              : library.error != null
+                  ? _buildErrorState(context, ref, library.error!)
+                  : library.items.isEmpty
+                      ? _buildEmptyState(context, ref)
+                      : _buildLibrary(
+                          context, ref, library, continueWatching),
+        ),
       ),
       // Dezenter persistenter Hinweis im Footer, wenn Sleep-Modus
       // gerade aktiv ist. Bewusst NICHT als Banner ganz oben (zu
@@ -908,4 +932,12 @@ class _OffPillButton extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Intent marker für den F/F11-Vollbild-Hotkey im Home-Screen.
+/// FocusableActionDetector wandelt die SingleActivator-Bindings
+/// in dieses Intent um, die zugehörige CallbackAction ruft
+/// FullscreenService.toggle().
+class _ToggleFullscreenIntent extends Intent {
+  const _ToggleFullscreenIntent();
 }

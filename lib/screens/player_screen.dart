@@ -836,17 +836,6 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
             // sluggish. Space + the big round button still toggle
             // playback for users who prefer those.
             onTap: () {
-              // DIAGNOSE v1.9.17: loggt jeden Tap der hier ankommt,
-              // damit wir sehen ob der Root-GD bei Klicks auf das
-              // Next-Episode-Overlay tatsächlich gewinnt (in der
-              // Gesture-Arena geht's bei Nested-GDs nicht immer
-              // intuitiv zu). Wenn diese Log-Zeile beim Klick auf
-              // "Nächste Folge"-Button erscheint, ist der Root-GD
-              // schuld; wenn nicht, liegt's am Button-Hit-Target.
-              LogService.info(
-                '[tap] root-GD onTap, _showNextEpisode=$_showNextEpisode '
-                '_isPlaying=$_isPlaying',
-              );
               if (_isPlaying) {
                 _player.pause();
               } else {
@@ -1613,27 +1602,36 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
               ],
             ),
           ),
-          // Button content
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: onPressed,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(icon, size: 20, color: Colors.black),
-                    const SizedBox(width: 8),
-                    Text(
-                      label,
-                      style: const TextStyle(
-                        color: Colors.black,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
+          // Button content + Hover-Feedback. MouseRegion gibt den
+          // Click-Cursor, InkWell mit explizitem hoverColor sorgt
+          // dafür dass der User auf hellem Background ein
+          // sichtbares Tönen beim Hover sieht (Default-Hover wäre
+          // zu subtil auf Weiß/Grau).
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onPressed,
+                hoverColor: Colors.black.withValues(alpha: 0.08),
+                splashColor: Colors.black.withValues(alpha: 0.15),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(icon, size: 20, color: Colors.black),
+                      const SizedBox(width: 8),
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1706,12 +1704,18 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       child: AnimatedOpacity(
         opacity: _showNextEpisode ? 1.0 : 0.0,
         duration: const Duration(milliseconds: 300),
-        // v1.9.15's GestureDetector-opaque-wrap hat gegen die
-        // Gesture-Arena des Root-Detectors nicht durchgehauen —
-        // entfernt. Die Button-Klickbarkeit wird jetzt im Root-GD
-        // sichergestellt durch ein Short-Circuit auf
-        // _showNextEpisode (siehe outer onTap-Callback).
-        child: Container(
+        // Opaque-GestureDetector schluckt Klicks INNERHALB des
+        // Overlay-Felds (Padding, Titel, Header) damit das Video
+        // nicht pausiert wenn man neben die Buttons tippt. Die
+        // Buttons gewinnen als tiefere Gestures in der Arena weiter
+        // (sie sind nochmal innerhalb des Containers). v1.9.15
+        // hatte denselben Wrap, der hat aber nichts gemacht weil
+        // das Controls-Layer ihn überdeckt hat (siehe v1.9.18-
+        // Stack-Fix). Mit dem fix funktioniert er jetzt korrekt.
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {},
+          child: Container(
           width: 280,
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -1767,8 +1771,6 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     Expanded(
                       child: _buildCountdownButton(
                         onPressed: () {
-                          LogService.info(
-                              '[tap] "Nächste Folge"-Button onPressed');
                           _isCompleted = true;
                           _playNextEpisode();
                         },
@@ -1783,10 +1785,10 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 Row(
                   children: [
                     Expanded(
-                      child: OutlinedButton(
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: OutlinedButton(
                         onPressed: () {
-                          LogService.info(
-                              '[tap] "Abspann ansehen"-Button onPressed');
                           setState(() => _watchingCredits = true);
                         },
                         style: OutlinedButton.styleFrom(
@@ -1801,8 +1803,22 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                             fontSize: 13,
                             fontWeight: FontWeight.w500,
                           ),
+                        ).copyWith(
+                          // Explizites Hover-Feedback: heller Anflug auf
+                          // dem dunklen Surface-Background. Default-Overlay
+                          // war auf diesem Theme kaum sichtbar.
+                          overlayColor: WidgetStateProperty.resolveWith((s) {
+                            if (s.contains(WidgetState.pressed)) {
+                              return Colors.white.withValues(alpha: 0.16);
+                            }
+                            if (s.contains(WidgetState.hovered)) {
+                              return Colors.white.withValues(alpha: 0.08);
+                            }
+                            return null;
+                          }),
                         ),
                         child: const Text('Abspann ansehen'),
+                      ),
                       ),
                     ),
                   ],
@@ -1811,25 +1827,36 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 Row(
                   children: [
                     Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          LogService.info(
-                              '[tap] "Jetzt abspielen"-Button onPressed');
-                          _isCompleted = true;
-                          _playNextEpisode();
-                        },
-                        icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                        label: const Text('Jetzt abspielen'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          textStyle: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            _isCompleted = true;
+                            _playNextEpisode();
+                          },
+                          icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                          label: const Text('Jetzt abspielen'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            textStyle: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ).copyWith(
+                            overlayColor: WidgetStateProperty.resolveWith((s) {
+                              if (s.contains(WidgetState.pressed)) {
+                                return Colors.black.withValues(alpha: 0.18);
+                              }
+                              if (s.contains(WidgetState.hovered)) {
+                                return Colors.black.withValues(alpha: 0.08);
+                              }
+                              return null;
+                            }),
                           ),
                         ),
                       ),
@@ -1837,6 +1864,7 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                   ],
                 ),
             ],
+          ),
           ),
         ),
       ),
