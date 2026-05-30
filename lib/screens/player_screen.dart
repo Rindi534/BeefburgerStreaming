@@ -1604,17 +1604,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           ),
           // Button content + Hover-Feedback. MouseRegion gibt den
           // Click-Cursor, InkWell mit explizitem hoverColor sorgt
-          // dafür dass der User auf hellem Background ein
-          // sichtbares Tönen beim Hover sieht (Default-Hover wäre
-          // zu subtil auf Weiß/Grau).
+          // dafür dass der User auf hellem Background ein klar
+          // sichtbares Tönen beim Hover sieht (Default-Hover und
+          // v1.9.19's 8% waren zu subtil — auf 20% angehoben).
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: Material(
               color: Colors.transparent,
               child: InkWell(
                 onTap: onPressed,
-                hoverColor: Colors.black.withValues(alpha: 0.08),
-                splashColor: Colors.black.withValues(alpha: 0.15),
+                hoverColor: Colors.black.withValues(alpha: 0.20),
+                splashColor: Colors.black.withValues(alpha: 0.30),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   child: Row(
@@ -1804,15 +1804,16 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                             fontWeight: FontWeight.w500,
                           ),
                         ).copyWith(
-                          // Explizites Hover-Feedback: heller Anflug auf
-                          // dem dunklen Surface-Background. Default-Overlay
-                          // war auf diesem Theme kaum sichtbar.
+                          // Explizites Hover-Feedback: deutlich heller
+                          // Anflug auf dem dunklen Surface-Background.
+                          // v1.9.19's 8% war zu subtil — 22% Weiß sticht
+                          // jetzt klar hervor.
                           overlayColor: WidgetStateProperty.resolveWith((s) {
                             if (s.contains(WidgetState.pressed)) {
-                              return Colors.white.withValues(alpha: 0.16);
+                              return Colors.white.withValues(alpha: 0.32);
                             }
                             if (s.contains(WidgetState.hovered)) {
-                              return Colors.white.withValues(alpha: 0.08);
+                              return Colors.white.withValues(alpha: 0.22);
                             }
                             return null;
                           }),
@@ -1850,10 +1851,10 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                           ).copyWith(
                             overlayColor: WidgetStateProperty.resolveWith((s) {
                               if (s.contains(WidgetState.pressed)) {
-                                return Colors.black.withValues(alpha: 0.18);
+                                return Colors.black.withValues(alpha: 0.32);
                               }
                               if (s.contains(WidgetState.hovered)) {
-                                return Colors.black.withValues(alpha: 0.08);
+                                return Colors.black.withValues(alpha: 0.20);
                               }
                               return null;
                             }),
