@@ -836,19 +836,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
             // sluggish. Space + the big round button still toggle
             // playback for users who prefer those.
             onTap: () {
-              // Wenn das Next-Episode-Overlay gerade sichtbar ist:
-              // Tap-to-Pause unterdrücken. Die ElevatedButtons im
-              // Overlay konkurrieren in der Gesture-Arena nicht
-              // zuverlässig gegen diesen Root-Detector — wenn der
-              // User auf das Overlay-Feld zielt aber neben einen
-              // Button daneben klickt (Header, Titel, Padding), würde
-              // das Video sonst pausieren. Die letzten 5% einer
-              // Folge sind ein kurzes Fenster; Pause via Leertaste /
-              // Play-Button-Klick bleibt erhalten.
-              if (_showNextEpisode) {
-                _showControls();
-                return;
-              }
+              // DIAGNOSE v1.9.17: loggt jeden Tap der hier ankommt,
+              // damit wir sehen ob der Root-GD bei Klicks auf das
+              // Next-Episode-Overlay tatsächlich gewinnt (in der
+              // Gesture-Arena geht's bei Nested-GDs nicht immer
+              // intuitiv zu). Wenn diese Log-Zeile beim Klick auf
+              // "Nächste Folge"-Button erscheint, ist der Root-GD
+              // schuld; wenn nicht, liegt's am Button-Hit-Target.
+              LogService.info(
+                '[tap] root-GD onTap, _showNextEpisode=$_showNextEpisode '
+                '_isPlaying=$_isPlaying',
+              );
               if (_isPlaying) {
                 _player.pause();
               } else {
@@ -1756,6 +1754,8 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     Expanded(
                       child: _buildCountdownButton(
                         onPressed: () {
+                          LogService.info(
+                              '[tap] "Nächste Folge"-Button onPressed');
                           _isCompleted = true;
                           _playNextEpisode();
                         },
@@ -1772,6 +1772,8 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     Expanded(
                       child: OutlinedButton(
                         onPressed: () {
+                          LogService.info(
+                              '[tap] "Abspann ansehen"-Button onPressed');
                           setState(() => _watchingCredits = true);
                         },
                         style: OutlinedButton.styleFrom(
@@ -1798,6 +1800,8 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     Expanded(
                       child: ElevatedButton.icon(
                         onPressed: () {
+                          LogService.info(
+                              '[tap] "Jetzt abspielen"-Button onPressed');
                           _isCompleted = true;
                           _playNextEpisode();
                         },
