@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:ui';
@@ -70,6 +71,14 @@ class FullscreenService {
   /// (Taskleiste bleibt verdeckt); Window verliert Fokus → AlwaysOnTop
   /// aus (neue Fenster können sich nach vorn drängen).
   static _FullscreenFocusListener? _focusListener;
+  /// Belt-and-Suspenders zum Focus-Listener: nicht jeder Focus-
+  /// Verlust feuert zuverlässig onWindowBlur. Z. B. wenn ein User
+  /// auf einer anderen Monitor-Taskleiste klickt und unser Player
+  /// im Hintergrund "den Fokus behält" laut Win32-API. Der Timer
+  /// pollt alle 300 ms den tatsächlichen Focus-Status und korrigiert
+  /// AlwaysOnTop, falls nötig.
+  static Timer? _focusPollTimer;
+  static bool? _lastPolledFocused;
 
   static bool get isFullscreen => _isFullscreen;
 
@@ -99,41 +108,79 @@ class FullscreenService {
           windowButtonVisibility: false,
         );
 
-        // 3. Figure out which display the window is on. Fall back
-        //    to the primary display on any lookup error — at worst
-        //    the user lands on the main monitor.
-        Display target;
+        // 3. Monitor-Daten in physikalischen Pixeln direkt via Win32
+        //    MonitorFromWindow + GetMonitorInfo holen.
+        //
+        // v1.9.28 hat screen_retriever genutzt — auf Multi-Monitor-
+        // Setups mit unterschiedlichen DPI-Faktoren landeten daraus
+        // teils logische Pixel, teils physikalische, teils kaputt
+        // skalierte Werte (User-Bericht: Vollbild nur ein Viertel
+        // groß auf Laptop-Bildschirm, oder zur falschen Position
+        // auf der mittleren externer). MonitorFromWindow ist
+        // DPI-V2-bewusst und liefert in jedem Fall die wahren
+        // physikalischen Bildschirm-Koordinaten im virtuellen
+        // Screen-Coord-System (genau das was SetWindowPos auch
+        // erwartet).
+        final monRes = _Win32Monitor.getCurrentMonitor();
+        Display? srTarget;
         try {
-          target = await _displayForCurrentWindow();
+          srTarget = await _displayForCurrentWindow();
         } catch (_) {
-          target = await screenRetriever.getPrimaryDisplay();
+          srTarget = null;
+        }
+        // Log BEIDE Quellen damit wir bei weiteren Bug-Reports
+        // direkt sehen ob screen_retriever lügt.
+        if (srTarget != null) {
+          LogService.info('[fs] screen_retriever target: '
+              'size=${srTarget.size.width}x${srTarget.size.height} '
+              'visiblePos=${srTarget.visiblePosition?.dx},${srTarget.visiblePosition?.dy} '
+              'visibleSize=${srTarget.visibleSize?.width}x${srTarget.visibleSize?.height}');
+        } else {
+          LogService.info('[fs] screen_retriever returned null');
+        }
+        if (monRes != null) {
+          LogService.info('[fs] Win32 GetMonitorInfo: '
+              'monitor=(${monRes.monitor.left},${monRes.monitor.top})-'
+              '(${monRes.monitor.right},${monRes.monitor.bottom}) '
+              'work=(${monRes.work.left},${monRes.work.top})-'
+              '(${monRes.work.right},${monRes.work.bottom})');
+        } else {
+          LogService.info('[fs] Win32 GetMonitorInfo returned null');
         }
 
-        // 4. Cover the entire display in physical pixels.
-        //
-        // screen_retriever's Display gives us:
-        //   - size           : full pixel dimensions of the monitor
-        //   - visiblePosition: top-left of the WORK AREA (NOT
-        //                      covered by the taskbar)
-        //   - visibleSize    : work-area size
-        //
-        // We want the MONITOR's origin, not the work area's. Logic:
-        //  - taskbar-at-bottom-or-right (the 99% case) →
-        //    visiblePosition equals the monitor origin already.
-        //  - taskbar-at-top-or-left → visiblePosition is shifted
-        //    positively into the work area; we undo that shift
-        //    when the corresponding inset is non-zero.
-        // Multi-monitor with the player on a secondary screen still
-        // works because we only treat positive offsets as taskbar
-        // shifts when the inset on the same axis is non-zero.
-        final hInset = target.size.width -
-            (target.visibleSize?.width ?? target.size.width);
-        final vInset = target.size.height -
-            (target.visibleSize?.height ?? target.size.height);
-        final vpX = target.visiblePosition?.dx ?? 0;
-        final vpY = target.visiblePosition?.dy ?? 0;
-        final monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
-        final monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
+        // Werte für die Bounds-Berechnung: Win32 bevorzugt
+        // (deterministisch DPI-korrekt), screen_retriever als
+        // Fallback.
+        final double monitorOriginX;
+        final double monitorOriginY;
+        final double monitorWidth;
+        final double monitorHeight;
+        if (monRes != null) {
+          monitorOriginX = monRes.monitor.left.toDouble();
+          monitorOriginY = monRes.monitor.top.toDouble();
+          monitorWidth =
+              (monRes.monitor.right - monRes.monitor.left).toDouble();
+          monitorHeight =
+              (monRes.monitor.bottom - monRes.monitor.top).toDouble();
+        } else if (srTarget != null) {
+          // Fallback auf screen_retriever-Logik (alte v1.9.28-Pfad).
+          final hInset = srTarget.size.width -
+              (srTarget.visibleSize?.width ?? srTarget.size.width);
+          final vInset = srTarget.size.height -
+              (srTarget.visibleSize?.height ?? srTarget.size.height);
+          final vpX = srTarget.visiblePosition?.dx ?? 0;
+          final vpY = srTarget.visiblePosition?.dy ?? 0;
+          monitorOriginX = (vpX > 0 && hInset > 0) ? 0.0 : vpX;
+          monitorOriginY = (vpY > 0 && vInset > 0) ? 0.0 : vpY;
+          monitorWidth = srTarget.size.width;
+          monitorHeight = srTarget.size.height;
+        } else {
+          // Letzte Notlösung: nichts tun, Player bleibt im
+          // windowed-Modus. Anstatt mit Fallback-Werten die völlig
+          // falsches Layout produzieren.
+          LogService.warn('[fs] both monitor sources null — aborting fs');
+          throw StateError('no monitor info available');
+        }
 
         // 4. Compute the OUTER window rect so the CLIENT area
         //    covers exactly the monitor pixels.
@@ -170,8 +217,8 @@ class FullscreenService {
         // on the other sides.
         final outerX = monitorOriginX - leftInset;
         final outerY = monitorOriginY - topInset;
-        final outerW = target.size.width + leftInset + rightInset;
-        final outerH = target.size.height + topInset + bottomInset;
+        final outerW = monitorWidth + leftInset + rightInset;
+        final outerH = monitorHeight + topInset + bottomInset;
         // PHYSICAL-Pixel SetWindowPos statt window_manager.setBounds.
         // Letzteres macht implizite DPI-Konvertierung basierend auf
         // dem aktuellen Window-Monitor — bei einem Multi-Monitor-
@@ -202,6 +249,27 @@ class FullscreenService {
         await windowManager.setAlwaysOnTop(true);
         _focusListener = _FullscreenFocusListener();
         windowManager.addListener(_focusListener!);
+        // Periodic-Poll als Sicherheitsnetz für Focus-Events die
+        // window_manager nicht durchreicht. Vergleicht den IST-
+        // Focus-Status mit dem zuletzt gepollten und korrigiert
+        // AlwaysOnTop entsprechend. Auch fängt das Drag-Szenario
+        // ab wo der User von einem anderen Monitor ein Fenster
+        // herzieht ohne dass explizit Focus-Events feuern.
+        _lastPolledFocused = true;
+        _focusPollTimer?.cancel();
+        _focusPollTimer = Timer.periodic(
+          const Duration(milliseconds: 300),
+          (_) async {
+            if (!_isFullscreen) return;
+            try {
+              final isFocused = await windowManager.isFocused();
+              if (isFocused != _lastPolledFocused) {
+                _lastPolledFocused = isFocused;
+                await windowManager.setAlwaysOnTop(isFocused);
+              }
+            } catch (_) {/* best-effort */}
+          },
+        );
 
         // 6. Suppress every visual "around the window" element DWM
         //    paints on Win11:
@@ -237,8 +305,8 @@ class FullscreenService {
         // the user reported.
         final rgnX1 = leftInset.toInt();
         final rgnY1 = topInset.toInt();
-        final rgnX2 = (leftInset + target.size.width).toInt();
-        final rgnY2 = (topInset + target.size.height).toInt();
+        final rgnX2 = (leftInset + monitorWidth).toInt();
+        final rgnY2 = (topInset + monitorHeight).toInt();
         final rgnOk =
             _Win11WindowRegion.setRectangularAt(rgnX1, rgnY1, rgnX2, rgnY2);
         LogService.info(
@@ -270,9 +338,9 @@ class FullscreenService {
               'right=${crect.right} bottom=${crect.bottom} '
               '(${crect.right - crect.left}x${crect.bottom - crect.top})');
         }
-        LogService.info('[fs] monitor reported '
-            '${target.size.width.toInt()}x${target.size.height.toInt()} '
-            'visiblePos=$vpX,$vpY hInset=$hInset vInset=$vInset');
+        LogService.info('[fs] monitor finalized '
+            '${monitorWidth.toInt()}x${monitorHeight.toInt()} '
+            'origin=$monitorOriginX,$monitorOriginY');
       } catch (_) {
         // Hard failure → fall back to window_manager.setFullScreen
         // so the user at least gets *something* fullscreen-ish.
@@ -303,10 +371,13 @@ class FullscreenService {
         //    would look like a thin slice of the player.
         _Win11WindowRegion.clear();
 
-        // 0a. Focus-Listener wieder abklemmen damit der gespeicherte
-        //     AlwaysOnTop-Restore nicht direkt vom Listener
-        //     überschrieben wird wenn der Fokus während des Pop-
-        //     Animationen mal kurz hin- und herwandert.
+        // 0a. Focus-Listener UND Poll-Timer wieder abklemmen damit
+        //     der gespeicherte AlwaysOnTop-Restore nicht direkt vom
+        //     Listener oder Timer überschrieben wird wenn der Fokus
+        //     während des Pop-Animationen mal kurz hin- und herwandert.
+        _focusPollTimer?.cancel();
+        _focusPollTimer = null;
+        _lastPolledFocused = null;
         if (_focusListener != null) {
           windowManager.removeListener(_focusListener!);
           _focusListener = null;
@@ -1161,6 +1232,99 @@ class _Win11ClientSize {
       }
     } catch (e, st) {
       LogService.warn('[fs] _Win11ClientSize.adjustForClientSize threw',
+          error: e, stack: st);
+      return null;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Direct Win32 MonitorFromWindow / GetMonitorInfo
+// ─────────────────────────────────────────────────────────────────────
+//
+// screen_retriever liefert auf Multi-Monitor-Setups mit gemischten
+// DPI-Faktoren teils logische, teils physische Pixel — der Code im
+// Plugin macht keine konsistente DPI-Konversion. Wir nutzen direkt
+// die Win32-API; auf einem PER_MONITOR_AWARE_V2-Prozess (was
+// Flutter Windows ist) liefert GetMonitorInfo garantiert raw
+// physische Pixel im virtuellen Bildschirm-Coord-System — exakt
+// das was SetWindowPos erwartet. 1:1, kein Faktor dazwischen.
+
+@Packed(1)
+final class _MonitorInfoStruct extends Struct {
+  @Uint32() external int cbSize;
+  // RECT rcMonitor inline as 4 Int32
+  @Int32() external int monLeft;
+  @Int32() external int monTop;
+  @Int32() external int monRight;
+  @Int32() external int monBottom;
+  // RECT rcWork inline as 4 Int32
+  @Int32() external int workLeft;
+  @Int32() external int workTop;
+  @Int32() external int workRight;
+  @Int32() external int workBottom;
+  @Uint32() external int dwFlags;
+}
+
+typedef _MonitorFromWindowNative = IntPtr Function(
+    IntPtr hwnd, Uint32 flags);
+typedef _MonitorFromWindowDart = int Function(int hwnd, int flags);
+
+typedef _GetMonitorInfoWNative = Int32 Function(
+    IntPtr hMonitor, Pointer<_MonitorInfoStruct> mi);
+typedef _GetMonitorInfoWDart = int Function(
+    int hMonitor, Pointer<_MonitorInfoStruct> mi);
+
+class _MonitorRects {
+  final _Win32Rect monitor;
+  final _Win32Rect work;
+  const _MonitorRects(this.monitor, this.work);
+}
+
+class _Win32Monitor {
+  static const int _MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+  /// Finds the monitor under the Flutter window and returns BOTH
+  /// the full monitor rect and the work area rect — both in
+  /// physical pixels in the virtual screen coord system.
+  static _MonitorRects? getCurrentMonitor() {
+    if (!Platform.isWindows) return null;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) {
+        LogService.warn('[fs] _Win32Monitor: hwnd lookup returned 0');
+        return null;
+      }
+      final monitorFromWindow = user32.lookupFunction<
+          _MonitorFromWindowNative,
+          _MonitorFromWindowDart>('MonitorFromWindow');
+      final getMonitorInfo = user32.lookupFunction<
+          _GetMonitorInfoWNative,
+          _GetMonitorInfoWDart>('GetMonitorInfoW');
+      final hMonitor = monitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST);
+      if (hMonitor == 0) {
+        LogService.warn('[fs] MonitorFromWindow returned 0');
+        return null;
+      }
+      final miPtr = calloc<_MonitorInfoStruct>();
+      try {
+        miPtr.ref.cbSize = sizeOf<_MonitorInfoStruct>();
+        final ok = getMonitorInfo(hMonitor, miPtr);
+        if (ok == 0) {
+          LogService.warn('[fs] GetMonitorInfoW returned 0');
+          return null;
+        }
+        final mi = miPtr.ref;
+        return _MonitorRects(
+          _Win32Rect(mi.monLeft, mi.monTop, mi.monRight, mi.monBottom),
+          _Win32Rect(mi.workLeft, mi.workTop, mi.workRight, mi.workBottom),
+        );
+      } finally {
+        calloc.free(miPtr);
+      }
+    } catch (e, st) {
+      LogService.warn('[fs] _Win32Monitor.getCurrentMonitor threw',
           error: e, stack: st);
       return null;
     }
