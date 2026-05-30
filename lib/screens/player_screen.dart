@@ -1187,12 +1187,14 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
         // ist — sichtbares Zeichen für den User dass nichts in den
         // Watch-Progress geschrieben wird. Tap öffnet eine kurze
         // Erklärung damit "huch, was ist das" sofort auflösbar ist.
+        // Icon-Größe 24 + 6 px Abstand: matched die Subtitle-/Audio-
+        // /Volume-Geschwister-Knöpfe, kein Layout-Sprung.
         if (sleepMode) ...[
           IconButton(
             icon: const Icon(
               Icons.bedtime_rounded,
               color: AppTheme.accent,
-              size: 28,
+              size: 24,
             ),
             tooltip: 'Sleep-Modus aktiv',
             onPressed: () => _showSleepModeInfo(context),
@@ -1664,12 +1666,24 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       child: AnimatedOpacity(
         opacity: _showNextEpisode ? 1.0 : 0.0,
         duration: const Duration(milliseconds: 300),
-        child: Container(
-          width: 280,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppTheme.surface.withValues(alpha: 0.95),
-            borderRadius: BorderRadius.circular(12),
+        // GestureDetector mit HitTestBehavior.opaque schluckt ALLE
+        // Klicks innerhalb der Overlay-Bounds. Sonst landen Klicks
+        // auf die Padding-Bereiche / Titelzeile (alles ohne InkWell
+        // also kein eigenes Hit-Target) beim outer Player-Detector
+        // → Video pausiert statt Button zu treffen. Die echten
+        // Action-Buttons (Countdown / "Abspann ansehen") konsumieren
+        // ihre eigenen Taps weiterhin in ihren Material-Recognizers.
+        // Der no-op-onTap hier sorgt nur dafür dass der GestureDetector
+        // overhaupt einen Tap-Recognizer hat.
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {},
+          child: Container(
+            width: 280,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppTheme.surface.withValues(alpha: 0.95),
+              borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: AppTheme.accent.withValues(alpha: 0.3),
             ),
@@ -1784,6 +1798,7 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                   ],
                 ),
             ],
+          ),
           ),
         ),
       ),
