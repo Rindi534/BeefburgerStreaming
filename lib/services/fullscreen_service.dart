@@ -65,6 +65,11 @@ class FullscreenService {
   /// "Taskleiste bleibt sichtbar" bug. On exit we restore the
   /// maximized state instead of the snapshotted bounds.
   static bool _savedMaximized = false;
+  /// WindowListener der während Fullscreen den AlwaysOnTop-Status
+  /// an den Focus-State koppelt: Window hat Fokus → AlwaysOnTop an
+  /// (Taskleiste bleibt verdeckt); Window verliert Fokus → AlwaysOnTop
+  /// aus (neue Fenster können sich nach vorn drängen).
+  static _FullscreenFocusListener? _focusListener;
 
   static bool get isFullscreen => _isFullscreen;
 
@@ -167,14 +172,36 @@ class FullscreenService {
         final outerY = monitorOriginY - topInset;
         final outerW = target.size.width + leftInset + rightInset;
         final outerH = target.size.height + topInset + bottomInset;
-        await windowManager.setBounds(
-          Rect.fromLTWH(outerX, outerY, outerW, outerH),
+        // PHYSICAL-Pixel SetWindowPos statt window_manager.setBounds.
+        // Letzteres macht implizite DPI-Konvertierung basierend auf
+        // dem aktuellen Window-Monitor — bei einem Multi-Monitor-
+        // Setup mit unterschiedlichem Scaling-Faktor pro Monitor
+        // (Laptop 200% + Externer 100%, etc.) wird das daneben
+        // gerechnet und das Fenster ist nur ein Viertel groß.
+        // screen_retriever's display.size sind physische Pixel
+        // direkt aus MONITORINFO; SetWindowPos akzeptiert sie 1:1.
+        final placed = _Win11FrameRefresh.setPhysicalBounds(
+          outerX.toInt(),
+          outerY.toInt(),
+          outerW.toInt(),
+          outerH.toInt(),
         );
+        LogService.info('[fs] SetWindowPos physical placed=$placed '
+            'x=${outerX.toInt()} y=${outerY.toInt()} '
+            'w=${outerW.toInt()} h=${outerH.toInt()}');
 
-        // 5. The critical bit: keep us above the taskbar so it
-        //    can't slide over the player when the cursor hits the
-        //    bottom edge.
+        // 5. AlwaysOnTop dynamisch an Focus koppeln.
+        //
+        // Wir starten mit AlwaysOnTop=true damit die Taskleiste
+        // verdeckt bleibt. Ein WindowListener droppt das beim
+        // Focus-Loss (= neues Fenster bekommt Fokus → kann sich
+        // nach vorn drängen) und reaktiviert es beim Focus-Gain
+        // (User klickt zurück in den Player → Taskleiste wieder
+        // verdeckt). Ohne das blieben neue Programmfenster hinter
+        // dem Player versteckt — User-Beschwerde.
         await windowManager.setAlwaysOnTop(true);
+        _focusListener = _FullscreenFocusListener();
+        windowManager.addListener(_focusListener!);
 
         // 6. Suppress every visual "around the window" element DWM
         //    paints on Win11:
@@ -276,6 +303,14 @@ class FullscreenService {
         //    would look like a thin slice of the player.
         _Win11WindowRegion.clear();
 
+        // 0a. Focus-Listener wieder abklemmen damit der gespeicherte
+        //     AlwaysOnTop-Restore nicht direkt vom Listener
+        //     überschrieben wird wenn der Fokus während des Pop-
+        //     Animationen mal kurz hin- und herwandert.
+        if (_focusListener != null) {
+          windowManager.removeListener(_focusListener!);
+          _focusListener = null;
+        }
 
         // Reverse order of enter: drop always-on-top first so the
         // window relinquishes its Z-order claim before bounds /
@@ -582,6 +617,43 @@ class _Win11FrameRefresh {
   static const int _SWP_NOZORDER = 0x0004;
   static const int _SWP_NOACTIVATE = 0x0010;
   static const int _SWP_FRAMECHANGED = 0x0020;
+
+  /// Setzt das Fenster über Win32 SetWindowPos mit ECHTEN
+  /// PHYSICAL Pixeln. Notwendig auf Multi-Monitor-Setups mit
+  /// unterschiedlichen DPI-Faktoren: window_manager.setBounds
+  /// macht implizite DPI-Konversion basierend auf dem aktuellen
+  /// Fenster-Monitor, was bei einem Wechsel auf einen anders
+  /// skalierten Monitor (z. B. Laptop 200% vs externer 100%)
+  /// schief geht — das Fenster landet nur ein Viertel groß.
+  ///
+  /// screen_retriever liefert PHYSICAL Pixel direkt aus
+  /// MONITORINFO.rcMonitor; SetWindowPos akzeptiert PHYSICAL
+  /// Pixel direkt. 1:1, kein Faktor dazwischen.
+  static bool setPhysicalBounds(int x, int y, int w, int h) {
+    if (!Platform.isWindows) return false;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final hwnd = _Win11Corners._findFlutterHwnd(user32);
+      if (hwnd == 0) return false;
+      final setWindowPos = user32
+          .lookupFunction<_SetWindowPosNative, _SetWindowPosDart>(
+              'SetWindowPos');
+      // hwndInsertAfter = 0 (HWND_TOP via SWP_NOZORDER ignoriert),
+      // SWP_NOZORDER + SWP_NOACTIVATE = Position + Größe setzen,
+      // nichts anderes anfassen.
+      final result = setWindowPos(
+        hwnd,
+        0,
+        x, y, w, h,
+        _SWP_NOZORDER | _SWP_NOACTIVATE,
+      );
+      return result != 0;
+    } catch (e, st) {
+      LogService.warn('[fs] _Win11FrameRefresh.setPhysicalBounds threw',
+          error: e, stack: st);
+      return false;
+    }
+  }
 
   static bool forceFrameChanged() {
     if (!Platform.isWindows) return false;
@@ -1092,5 +1164,36 @@ class _Win11ClientSize {
           error: e, stack: st);
       return null;
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Focus-coupled AlwaysOnTop listener
+// ─────────────────────────────────────────────────────────────────────
+//
+// Während Fullscreen darf der Player NICHT permanent AlwaysOnTop sein:
+// Ein neues App-Fenster (z. B. ein Browser-Popup, ein anderer Player,
+// eine Notification mit Dialog) würde sonst hinter unserem Player
+// hängen und unzugänglich werden. User-Wunsch: neue Fenster sollen
+// nach vorn kommen, sobald sie Fokus stehlen.
+//
+// Strategie: AlwaysOnTop koppeln an unseren Focus-State. Solange wir
+// Fokus haben, bleibt es an (Taskleisten-Suppress wirkt); sobald der
+// Fokus zu einem anderen Fenster wandert (= das andere Fenster
+// will sich nach vorn drängen), droppen wir AlwaysOnTop und das
+// andere Fenster gewinnt natürlich den Z-Order. Klickt der User
+// zurück in unsere App, kommt AlwaysOnTop sofort wieder.
+class _FullscreenFocusListener with WindowListener {
+  @override
+  void onWindowFocus() {
+    // Best-effort — wenn wir nicht mehr im Fullscreen sind, ist's egal.
+    if (!FullscreenService.isFullscreen) return;
+    windowManager.setAlwaysOnTop(true);
+  }
+
+  @override
+  void onWindowBlur() {
+    if (!FullscreenService.isFullscreen) return;
+    windowManager.setAlwaysOnTop(false);
   }
 }
