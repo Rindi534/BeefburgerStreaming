@@ -516,6 +516,11 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
 
   void _saveProgress() {
     if (_position.inSeconds < 3 || _duration.inSeconds < 10) return;
+    // Sleep-Modus: NIE in den Watch-Progress schreiben. Auto-Next
+    // läuft trotzdem weiter (das ist der Sinn des Modus) — nur die
+    // Hive-Persistierung wird übersprungen, sodass der vor-dem-
+    // Einschalten gemerkte Stand erhalten bleibt.
+    if (ref.read(settingsProvider).sleepModeEnabled) return;
 
     ref.read(watchProgressProvider.notifier).updateProgress(
           mediaId: widget.mediaId ?? widget.filePath,
@@ -875,6 +880,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     ),
                   ),
 
+                // Next episode overlay — bewusst VOR den Controls
+                // platziert damit die Hover-Vorschau der Seekbar
+                // (die als Teil der Controls gezeichnet wird) im
+                // Z-Order ÜBER dem Next-Episode-Overlay landet.
+                // Die Overlay-Position (bottom: 100, right: 24)
+                // überschneidet sich nicht mit interaktiven
+                // Control-Elementen, deshalb kommt auch der Tap
+                // auf die "Jetzt starten"-Buttons trotzdem an —
+                // Controls haben dort keine Hit-Targets.
+                if (_showNextEpisode) _buildNextEpisodeOverlay(),
+
                 // Controls overlay
                 AnimatedOpacity(
                   opacity: _controlsVisible ? 1.0 : 0.0,
@@ -884,9 +900,6 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     child: _buildControls(),
                   ),
                 ),
-
-                // Next episode overlay
-                if (_showNextEpisode) _buildNextEpisodeOverlay(),
 
                 // Playback error overlay — takes precedence, stops controls
                 // from being useful anyway.
@@ -1163,12 +1176,29 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
   ///   almost never the case.
   Widget _buildBottomControlRow() {
     final advanced = ref.watch(settingsProvider).advancedToolsEnabled;
+    final sleepMode = ref.watch(settingsProvider).sleepModeEnabled;
 
     // Right-side icon group — built once so both layout branches
     // render the same visual.
     final rightGroup = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Sleep-Indicator. Erscheint NUR wenn der Modus gerade an
+        // ist — sichtbares Zeichen für den User dass nichts in den
+        // Watch-Progress geschrieben wird. Tap öffnet eine kurze
+        // Erklärung damit "huch, was ist das" sofort auflösbar ist.
+        if (sleepMode) ...[
+          IconButton(
+            icon: const Icon(
+              Icons.bedtime_rounded,
+              color: AppTheme.accent,
+              size: 28,
+            ),
+            tooltip: 'Sleep-Modus aktiv',
+            onPressed: () => _showSleepModeInfo(context),
+          ),
+          const SizedBox(width: 6),
+        ],
         if (_subtitleTracks.isNotEmpty || widget.subtitlePath != null) ...[
           _buildSubtitleDropdown(),
           const SizedBox(width: 6),
@@ -2113,6 +2143,43 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       iconColor: AppTheme.textSecondary,
       tooltip: 'Audiospuren',
       entries: entries,
+    );
+  }
+
+  /// Erklär-Dialog für den Sleep-Mode-Indicator im Player.
+  /// Bewusst kein In-Dialog-Toggle (Setting ist die kanonische
+  /// Stelle, sonst hat man's an zwei Orten zu pflegen).
+  void _showSleepModeInfo(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: const [
+            Icon(Icons.bedtime_rounded, color: AppTheme.accent, size: 22),
+            SizedBox(width: 10),
+            Text('Sleep-Modus aktiv',
+                style: TextStyle(color: AppTheme.textPrimary)),
+          ],
+        ),
+        content: const Text(
+          'Folgen laufen ganz normal weiter — auch automatisch zur '
+          'nächsten, wenn die aktuelle endet. Aber NICHTS davon wird '
+          'gespeichert: dein Continue-Watching-Stand bleibt auf der '
+          'Folge, die du vor dem Einschalten aktiv geschaut hast.\n\n'
+          'Ausschalten: Einstellungen → Sleep-Modus.',
+          style: TextStyle(color: AppTheme.textSecondary, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK',
+                style: TextStyle(color: AppTheme.accent)),
+          ),
+        ],
+      ),
     );
   }
 
