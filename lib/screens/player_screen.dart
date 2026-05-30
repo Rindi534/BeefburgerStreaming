@@ -836,6 +836,19 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
             // sluggish. Space + the big round button still toggle
             // playback for users who prefer those.
             onTap: () {
+              // Wenn das Next-Episode-Overlay gerade sichtbar ist:
+              // Tap-to-Pause unterdrücken. Die ElevatedButtons im
+              // Overlay konkurrieren in der Gesture-Arena nicht
+              // zuverlässig gegen diesen Root-Detector — wenn der
+              // User auf das Overlay-Feld zielt aber neben einen
+              // Button daneben klickt (Header, Titel, Padding), würde
+              // das Video sonst pausieren. Die letzten 5% einer
+              // Folge sind ein kurzes Fenster; Pause via Leertaste /
+              // Play-Button-Klick bleibt erhalten.
+              if (_showNextEpisode) {
+                _showControls();
+                return;
+              }
               if (_isPlaying) {
                 _player.pause();
               } else {
@@ -1187,17 +1200,33 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
         // ist — sichtbares Zeichen für den User dass nichts in den
         // Watch-Progress geschrieben wird. Tap öffnet eine kurze
         // Erklärung damit "huch, was ist das" sofort auflösbar ist.
-        // Icon-Größe 24 + 6 px Abstand: matched die Subtitle-/Audio-
-        // /Volume-Geschwister-Knöpfe, kein Layout-Sprung.
+        //
+        // Wrap-Strategie matched die Geschwister: MouseRegion +
+        // expliziter IconButton.iconSize/padding garantiert dass die
+        // intrinsische Constraint-Box dieselbe Höhe und denselben
+        // vertikalen Anker hat wie die Subtitle/Audio/Volume-Knöpfe
+        // (die durch ihre OverlayPortal/CompositedTransformTarget-
+        // Wrapper unsichtbar dieselben Defaults konfiguriert
+        // bekommen). Ohne diese explizite Setzung wirkte der Mond
+        // leicht oversize/unterschoben gegenüber den Geschwistern.
         if (sleepMode) ...[
-          IconButton(
-            icon: const Icon(
-              Icons.bedtime_rounded,
-              color: AppTheme.accent,
-              size: 24,
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: IconButton(
+              padding: const EdgeInsets.all(8),
+              constraints: const BoxConstraints(
+                minWidth: 40,
+                minHeight: 40,
+              ),
+              iconSize: 24,
+              icon: const Icon(
+                Icons.bedtime_rounded,
+                color: AppTheme.accent,
+                size: 24,
+              ),
+              tooltip: 'Sleep-Modus aktiv',
+              onPressed: () => _showSleepModeInfo(context),
             ),
-            tooltip: 'Sleep-Modus aktiv',
-            onPressed: () => _showSleepModeInfo(context),
           ),
           const SizedBox(width: 6),
         ],
@@ -1666,24 +1695,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       child: AnimatedOpacity(
         opacity: _showNextEpisode ? 1.0 : 0.0,
         duration: const Duration(milliseconds: 300),
-        // GestureDetector mit HitTestBehavior.opaque schluckt ALLE
-        // Klicks innerhalb der Overlay-Bounds. Sonst landen Klicks
-        // auf die Padding-Bereiche / Titelzeile (alles ohne InkWell
-        // also kein eigenes Hit-Target) beim outer Player-Detector
-        // → Video pausiert statt Button zu treffen. Die echten
-        // Action-Buttons (Countdown / "Abspann ansehen") konsumieren
-        // ihre eigenen Taps weiterhin in ihren Material-Recognizers.
-        // Der no-op-onTap hier sorgt nur dafür dass der GestureDetector
-        // overhaupt einen Tap-Recognizer hat.
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {},
-          child: Container(
-            width: 280,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.surface.withValues(alpha: 0.95),
-              borderRadius: BorderRadius.circular(12),
+        // v1.9.15's GestureDetector-opaque-wrap hat gegen die
+        // Gesture-Arena des Root-Detectors nicht durchgehauen —
+        // entfernt. Die Button-Klickbarkeit wird jetzt im Root-GD
+        // sichergestellt durch ein Short-Circuit auf
+        // _showNextEpisode (siehe outer onTap-Callback).
+        child: Container(
+          width: 280,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppTheme.surface.withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: AppTheme.accent.withValues(alpha: 0.3),
             ),
@@ -1798,7 +1820,6 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                   ],
                 ),
             ],
-          ),
           ),
         ),
       ),
