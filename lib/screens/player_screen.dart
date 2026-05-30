@@ -925,32 +925,44 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
   }
 
   Widget _buildControls() {
-    return Container(
-      // Netflix/Disney+-Style: very soft, long gradient instead of a
-      // sharp "bar". Starts higher up (~50% from the bottom) and only
-      // reaches ~60 % opacity at the very edge, so it reads as a
-      // subtle vignette rather than a visible band. Icons/text carry
-      // their own shadows (see _shadowed(…) helpers below) as a
-      // belt-and-suspenders safety net on fully-white scenes.
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Color(0x99000000), // top vignette — ~60 %
-            Colors.transparent,
-            Colors.transparent,
-            Color(0x99000000), // bottom vignette — ~60 %
-          ],
-          stops: [0.0, 0.25, 0.5, 1.0],
+    // Stack-Architektur: Gradient als Hintergrund in IgnorePointer,
+    // damit er KEINE Hit-Tests fängt. Interaktive Elemente bekommen
+    // ihre eigenen Hits weiterhin (Buttons im Bottom-Bar, Slider,
+    // etc.). Empty-Bereiche reichen den Tap durch zum darunter
+    // liegenden NextEpisodeOverlay (oder dem outer Player-GD).
+    //
+    // v1.9.17-Log war eindeutig: Klicks aufs NextEpisodeOverlay
+    // erreichten die Buttons NIE — der DecoratedBox-Container von
+    // _buildControls() ist standardmäßig hit-testable und hat
+    // alles geschluckt. Lösung: Gradient explizit in IgnorePointer,
+    // damit nur die echten Interaktiven Hits absorbieren.
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Hintergrund-Vignette (Netflix/Disney+-Style) — visuell
+        // identisch zu vorher, aber NICHT mehr hit-testable.
+        Positioned.fill(
+          child: IgnorePointer(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0x99000000), // top vignette — ~60 %
+                    Colors.transparent,
+                    Colors.transparent,
+                    Color(0x99000000), // bottom vignette — ~60 %
+                  ],
+                  stops: [0.0, 0.25, 0.5, 1.0],
+                ),
+              ),
+            ),
+          ),
         ),
-      ),
-      // Don't inset bottom — on Windows (non-fullscreen) SafeArea
-      // reserves a small system gesture area at the bottom which
-      // shows up as a black band under the control bar and clips
-      // the bottom of the IconButton hover splashes. We handle
-      // bottom spacing ourselves via the control row's padding.
-      child: SafeArea(
+      // Inhalt — interaktive Kinder lokal hit-testable, transparente
+      // Bereiche durchlässig zum Layer darunter.
+      SafeArea(
         bottom: false,
         // Apply a subtle black halo to EVERY icon and text inside the
         // controls overlay. The gradient alone isn't enough on fully
@@ -1146,6 +1158,7 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
         ),
         ),
       ),
+      ],
     );
   }
 
