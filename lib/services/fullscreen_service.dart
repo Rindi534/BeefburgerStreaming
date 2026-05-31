@@ -65,10 +65,12 @@ class FullscreenService {
   /// "Taskleiste bleibt sichtbar" bug. On exit we restore the
   /// maximized state instead of the snapshotted bounds.
   static bool _savedMaximized = false;
-  /// WindowListener der während Fullscreen den AlwaysOnTop-Status
-  /// an den Focus-State koppelt: Window hat Fokus → AlwaysOnTop an
-  /// (Taskleiste bleibt verdeckt); Window verliert Fokus → AlwaysOnTop
-  /// aus (neue Fenster können sich nach vorn drängen).
+  /// WindowListener der unseren OnFocus-Pfad bedient (zurück in den
+  /// Player klicken → AlwaysOnTop wieder anschalten). Den Blur-Pfad
+  /// behandelt jetzt der SetWinEventHook unten — der weiß im Gegensatz
+  /// zum window_manager-Listener WELCHES Fenster Fokus bekommt und
+  /// kann zwischen "neues Popup" und "User klickt bestehendes Fenster"
+  /// unterscheiden.
   static _FullscreenFocusListener? _focusListener;
 
   static bool get isFullscreen => _isFullscreen;
@@ -228,28 +230,27 @@ class FullscreenService {
             'x=${outerX.toInt()} y=${outerY.toInt()} '
             'w=${outerW.toInt()} h=${outerH.toInt()}');
 
-        // 5. AlwaysOnTop dynamisch an Focus koppeln.
+        // 5. AlwaysOnTop dynamisch koppeln — aber gezielt.
         //
-        // Wir starten mit AlwaysOnTop=true damit die Taskleiste
-        // verdeckt bleibt. Ein WindowListener droppt das beim
-        // Focus-Loss (= neues Fenster bekommt Fokus → kann sich
-        // nach vorn drängen) und reaktiviert es beim Focus-Gain
-        // (User klickt zurück in den Player → Taskleiste wieder
-        // verdeckt). Ohne das blieben neue Programmfenster hinter
-        // dem Player versteckt — User-Beschwerde.
+        // v1.9.28..30 hatten einen window_manager-WindowListener auf
+        // onWindowBlur, der AlwaysOnTop bei JEDEM Focus-Verlust
+        // droppt. Folge: jeder Klick irgendwo (auch in ein bereits
+        // existierendes Fenster auf einem anderen Monitor) ließ die
+        // Taskleiste auf dem Fullscreen-Monitor aufpoppen.
+        //
+        // v1.9.31: SetWinEventHook auf EVENT_SYSTEM_FOREGROUND. Der
+        // Callback bekommt das HWND, das gerade Foreground geworden
+        // ist. Wir vergleichen mit einem Set "schon bekannte HWNDs"
+        // (per EnumWindows beim Fullscreen-Start gesnapshottet):
+        //   - HWND ist NEU → echtes Popup → AlwaysOnTop droppen,
+        //     Popup wird sichtbar; bleibt gedroppt bis User zurück
+        //     in den Player klickt (OnWindowFocus reaktiviert dann).
+        //   - HWND ist bekannt → User klickt nur was Bestehendes an
+        //     → wir lassen AlwaysOnTop unangetastet, Taskleiste
+        //     bleibt verdeckt.
+        //   - HWND ist UNSERES → OnWindowFocus übernimmt eh.
         await windowManager.setAlwaysOnTop(true);
-        // Event-basierter Focus-Listener: NEW windows (z. B. ein
-        // System-Dialog, ein Browser-Popup) stehlen beim Erscheinen
-        // den Fokus und triggern onWindowBlur → wir droppen kurz
-        // AlwaysOnTop damit sie sichtbar werden.
-        //
-        // v1.9.29 hatte zusätzlich ein Timer.periodic-Poll alle
-        // 300 ms — das war zu aggressiv und hat bei JEDEM
-        // Klick irgendwo anders die Taskleiste auf dem Fullscreen-
-        // Monitor aufpoppen lassen. User-Beschwerde berechtigt;
-        // Poll wieder raus. Drag-to-front-Szenario damit bewusst
-        // nicht mehr unterstützt — User hat das explizit als
-        // okay markiert.
+        _ForegroundHook.install();
         _focusListener = _FullscreenFocusListener();
         windowManager.addListener(_focusListener!);
 
@@ -361,6 +362,9 @@ class FullscreenService {
           windowManager.removeListener(_focusListener!);
           _focusListener = null;
         }
+        // 0b. Foreground-Hook wieder lösen — sonst würden wir auch
+        //     im windowed-Modus auf jedes neue Fenster reagieren.
+        _ForegroundHook.uninstall();
 
         // Reverse order of enter: drop always-on-top first so the
         // window relinquishes its Z-order claim before bounds /
@@ -1329,14 +1333,205 @@ class _Win32Monitor {
 class _FullscreenFocusListener with WindowListener {
   @override
   void onWindowFocus() {
-    // Best-effort — wenn wir nicht mehr im Fullscreen sind, ist's egal.
+    // User ist zurück im Player → AlwaysOnTop wieder anschalten
+    // damit die Taskleiste verdeckt bleibt. War vielleicht vom
+    // ForegroundHook (Popup) gedroppt worden.
     if (!FullscreenService.isFullscreen) return;
     windowManager.setAlwaysOnTop(true);
   }
 
-  @override
-  void onWindowBlur() {
-    if (!FullscreenService.isFullscreen) return;
+  // onWindowBlur bewusst NICHT überschrieben. Den Blur-Pfad bedient
+  // _ForegroundHook, weil der HWND-spezifisch zwischen "neues Popup"
+  // und "Klick in bestehendes Fenster" unterscheidet.
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SetWinEventHook — HWND-spezifische Foreground-Erkennung
+// ─────────────────────────────────────────────────────────────────────
+//
+// EVENT_SYSTEM_FOREGROUND feuert sobald irgendein Fenster system-weit
+// den Foreground-Status übernimmt. Im Gegensatz zum window_manager-
+// onWindowBlur kriegen wir hier mit WELCHES HWND es ist. Damit können
+// wir trennen:
+//   - Ein noch nie gesehenes HWND wird Foreground → ein neues Fenster
+//     ist gerade aufgepoppt (z. B. ein Browser-Tab in einem Popup,
+//     ein System-Dialog, der File-Picker). Wir droppen AlwaysOnTop,
+//     damit es vor unserem Player sichtbar wird.
+//   - Ein HWND, das wir schon kennen, wird Foreground → User klickt
+//     bloß auf ein anderes, bereits offenes Fenster. AlwaysOnTop
+//     bleibt an, Taskleiste bleibt verdeckt, der geklickte Fenster
+//     kriegt halt nur logischen Fokus aber bleibt hinter uns.
+//
+// Beim Install-Snapshot enumerieren wir per EnumWindows alle aktuell
+// sichtbaren Top-Level-Fenster und stopfen ihre HWNDs ins "known"-Set.
+// Jede danach aufpoppende neue HWND zählt damit als "neu".
+
+typedef _WinEventProcNative = Void Function(
+    IntPtr hWinEventHook,
+    Uint32 event,
+    IntPtr hwnd,
+    Int32 idObject,
+    Int32 idChild,
+    Uint32 idEventThread,
+    Uint32 dwmsEventTime);
+
+typedef _SetWinEventHookNative = IntPtr Function(
+    Uint32 eventMin,
+    Uint32 eventMax,
+    IntPtr hmodWinEventProc,
+    Pointer<NativeFunction<_WinEventProcNative>> pfnWinEventProc,
+    Uint32 idProcess,
+    Uint32 idThread,
+    Uint32 dwFlags);
+typedef _SetWinEventHookDart = int Function(
+    int eventMin,
+    int eventMax,
+    int hmodWinEventProc,
+    Pointer<NativeFunction<_WinEventProcNative>> pfnWinEventProc,
+    int idProcess,
+    int idThread,
+    int dwFlags);
+
+typedef _UnhookWinEventNative = Int32 Function(IntPtr hWinEventHook);
+typedef _UnhookWinEventDart = int Function(int hWinEventHook);
+
+typedef _EnumWindowsProcNative = Int32 Function(IntPtr hwnd, IntPtr lParam);
+typedef _EnumWindowsNative = Int32 Function(
+    Pointer<NativeFunction<_EnumWindowsProcNative>> lpEnumFunc, IntPtr lParam);
+typedef _EnumWindowsDart = int Function(
+    Pointer<NativeFunction<_EnumWindowsProcNative>> lpEnumFunc, int lParam);
+
+typedef _IsWindowVisibleNative = Int32 Function(IntPtr hwnd);
+typedef _IsWindowVisibleDart = int Function(int hwnd);
+
+class _ForegroundHook {
+  static const int _EVENT_SYSTEM_FOREGROUND = 0x0003;
+  static const int _WINEVENT_OUTOFCONTEXT = 0x0000;
+
+  static int _hookHandle = 0;
+  static int _ownHwnd = 0;
+  static final Set<int> _knownHwnds = <int>{};
+
+  /// Hängt ein paar Win32-Funktionen ins User32-Modul ein und
+  /// startet den Foreground-Hook. Idempotent (zweiter Aufruf no-op).
+  static void install() {
+    if (!Platform.isWindows) return;
+    if (_hookHandle != 0) return;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      _ownHwnd = _Win11Corners._findFlutterHwnd(user32);
+
+      // 1. Snapshot aller aktuell sichtbaren Top-Level-Fenster — damit
+      //    der Hook später NUR neu erscheinende HWNDs als Popup wertet.
+      _knownHwnds.clear();
+      _enumerateVisibleTopLevels(user32);
+      // Eigene HWND immer reinpacken (Foreground-Events für uns selbst
+      // sollen nie als "Popup" gewertet werden).
+      if (_ownHwnd != 0) _knownHwnds.add(_ownHwnd);
+      LogService.info(
+          '[fs] _ForegroundHook seeded ${_knownHwnds.length} known HWNDs');
+
+      // 2. Hook installieren.
+      final setHook = user32
+          .lookupFunction<_SetWinEventHookNative, _SetWinEventHookDart>(
+              'SetWinEventHook');
+      final cb = Pointer.fromFunction<_WinEventProcNative>(_winEventCallback);
+      _hookHandle = setHook(
+        _EVENT_SYSTEM_FOREGROUND,
+        _EVENT_SYSTEM_FOREGROUND,
+        0,
+        cb,
+        0, // alle Prozesse
+        0, // alle Threads
+        _WINEVENT_OUTOFCONTEXT,
+      );
+      LogService.info(
+          '[fs] SetWinEventHook installed handle=0x${_hookHandle.toRadixString(16)}');
+    } catch (e, st) {
+      LogService.warn('[fs] _ForegroundHook.install threw', error: e, stack: st);
+      _hookHandle = 0;
+    }
+  }
+
+  static void uninstall() {
+    if (!Platform.isWindows) return;
+    if (_hookHandle == 0) return;
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final unhook = user32
+          .lookupFunction<_UnhookWinEventNative, _UnhookWinEventDart>(
+              'UnhookWinEvent');
+      unhook(_hookHandle);
+      LogService.info('[fs] SetWinEventHook removed');
+    } catch (e, st) {
+      LogService.warn('[fs] _ForegroundHook.uninstall threw',
+          error: e, stack: st);
+    } finally {
+      _hookHandle = 0;
+      _ownHwnd = 0;
+      _knownHwnds.clear();
+    }
+  }
+
+  static void _enumerateVisibleTopLevels(DynamicLibrary user32) {
+    final enumWindows = user32
+        .lookupFunction<_EnumWindowsNative, _EnumWindowsDart>('EnumWindows');
+    final cb = Pointer.fromFunction<_EnumWindowsProcNative>(
+        _enumWindowsCallback, 1);
+    enumWindows(cb, 0);
+  }
+
+  /// Statischer EnumWindows-Callback — Win32 ruft das pro Fenster auf.
+  /// Wir filtern auf IsWindowVisible und stopfen alles ins Set.
+  static int _enumWindowsCallback(int hwnd, int lParam) {
+    try {
+      final user32 = DynamicLibrary.open('user32.dll');
+      final isVisible = user32
+          .lookupFunction<_IsWindowVisibleNative, _IsWindowVisibleDart>(
+              'IsWindowVisible');
+      if (isVisible(hwnd) != 0) {
+        _knownHwnds.add(hwnd);
+      }
+    } catch (_) {
+      // Fail-soft — ein nicht gesehenes Fenster wird halt als "neu"
+      // gewertet, das ist im Worst-Case ein einmaliger falscher
+      // AlwaysOnTop-Drop.
+    }
+    return 1; // weiter enumerieren
+  }
+
+  /// Foreground-Event-Callback. Läuft auf dem Thread, der die
+  /// Message-Loop pumpt — das ist Flutter's Main-Isolate, also OK
+  /// für direkten Dart-Method-Call.
+  static void _winEventCallback(
+      int hWinEventHook,
+      int event,
+      int hwnd,
+      int idObject,
+      int idChild,
+      int idEventThread,
+      int dwmsEventTime) {
+    if (!FullscreenService._isFullscreen) return;
+    if (hwnd == 0) return;
+    // Eigene HWND ignorieren — der window_manager-OnFocus-Pfad
+    // handhabt das schon.
+    if (hwnd == _ownHwnd) return;
+    // Object-ID 0 = OBJID_WINDOW (das Fenster selbst, nicht
+    // ein UI-Element darin). idChild = 0 bestätigt dasselbe.
+    if (idObject != 0 || idChild != 0) return;
+
+    final isKnown = _knownHwnds.contains(hwnd);
+    _knownHwnds.add(hwnd);
+    if (isKnown) {
+      // Bestehendes Fenster wird Foreground — User klickt nur was an.
+      // AlwaysOnTop bleibt wie's ist, Taskleiste bleibt verdeckt.
+      return;
+    }
+    // Neues HWND → Popup. AlwaysOnTop droppen damit es sichtbar wird.
+    // Bleibt gedroppt bis der User in den Player zurückklickt
+    // (_FullscreenFocusListener.onWindowFocus reaktiviert dann).
+    LogService.info('[fs] new foreground HWND=0x${hwnd.toRadixString(16)} '
+        '→ dropping AlwaysOnTop');
     windowManager.setAlwaysOnTop(false);
   }
 }
