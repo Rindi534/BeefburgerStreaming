@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:ui';
@@ -71,14 +70,6 @@ class FullscreenService {
   /// (Taskleiste bleibt verdeckt); Window verliert Fokus → AlwaysOnTop
   /// aus (neue Fenster können sich nach vorn drängen).
   static _FullscreenFocusListener? _focusListener;
-  /// Belt-and-Suspenders zum Focus-Listener: nicht jeder Focus-
-  /// Verlust feuert zuverlässig onWindowBlur. Z. B. wenn ein User
-  /// auf einer anderen Monitor-Taskleiste klickt und unser Player
-  /// im Hintergrund "den Fokus behält" laut Win32-API. Der Timer
-  /// pollt alle 300 ms den tatsächlichen Focus-Status und korrigiert
-  /// AlwaysOnTop, falls nötig.
-  static Timer? _focusPollTimer;
-  static bool? _lastPolledFocused;
 
   static bool get isFullscreen => _isFullscreen;
 
@@ -247,29 +238,20 @@ class FullscreenService {
         // verdeckt). Ohne das blieben neue Programmfenster hinter
         // dem Player versteckt — User-Beschwerde.
         await windowManager.setAlwaysOnTop(true);
+        // Event-basierter Focus-Listener: NEW windows (z. B. ein
+        // System-Dialog, ein Browser-Popup) stehlen beim Erscheinen
+        // den Fokus und triggern onWindowBlur → wir droppen kurz
+        // AlwaysOnTop damit sie sichtbar werden.
+        //
+        // v1.9.29 hatte zusätzlich ein Timer.periodic-Poll alle
+        // 300 ms — das war zu aggressiv und hat bei JEDEM
+        // Klick irgendwo anders die Taskleiste auf dem Fullscreen-
+        // Monitor aufpoppen lassen. User-Beschwerde berechtigt;
+        // Poll wieder raus. Drag-to-front-Szenario damit bewusst
+        // nicht mehr unterstützt — User hat das explizit als
+        // okay markiert.
         _focusListener = _FullscreenFocusListener();
         windowManager.addListener(_focusListener!);
-        // Periodic-Poll als Sicherheitsnetz für Focus-Events die
-        // window_manager nicht durchreicht. Vergleicht den IST-
-        // Focus-Status mit dem zuletzt gepollten und korrigiert
-        // AlwaysOnTop entsprechend. Auch fängt das Drag-Szenario
-        // ab wo der User von einem anderen Monitor ein Fenster
-        // herzieht ohne dass explizit Focus-Events feuern.
-        _lastPolledFocused = true;
-        _focusPollTimer?.cancel();
-        _focusPollTimer = Timer.periodic(
-          const Duration(milliseconds: 300),
-          (_) async {
-            if (!_isFullscreen) return;
-            try {
-              final isFocused = await windowManager.isFocused();
-              if (isFocused != _lastPolledFocused) {
-                _lastPolledFocused = isFocused;
-                await windowManager.setAlwaysOnTop(isFocused);
-              }
-            } catch (_) {/* best-effort */}
-          },
-        );
 
         // 6. Suppress every visual "around the window" element DWM
         //    paints on Win11:
@@ -371,13 +353,10 @@ class FullscreenService {
         //    would look like a thin slice of the player.
         _Win11WindowRegion.clear();
 
-        // 0a. Focus-Listener UND Poll-Timer wieder abklemmen damit
-        //     der gespeicherte AlwaysOnTop-Restore nicht direkt vom
-        //     Listener oder Timer überschrieben wird wenn der Fokus
-        //     während des Pop-Animationen mal kurz hin- und herwandert.
-        _focusPollTimer?.cancel();
-        _focusPollTimer = null;
-        _lastPolledFocused = null;
+        // 0a. Focus-Listener wieder abklemmen damit der gespeicherte
+        //     AlwaysOnTop-Restore nicht direkt vom Listener
+        //     überschrieben wird wenn der Fokus während des Pop-
+        //     Animationen mal kurz hin- und herwandert.
         if (_focusListener != null) {
           windowManager.removeListener(_focusListener!);
           _focusListener = null;
