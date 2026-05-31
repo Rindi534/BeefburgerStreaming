@@ -1412,35 +1412,55 @@ class _ForegroundHook {
   static int _ownHwnd = 0;
   static final Set<int> _knownHwnds = <int>{};
 
+  // Persistente NativeCallables. MÜSSEN gespeichert + nach Gebrauch
+  // `.close()`-d werden, sonst memleak. v1.9.31 nutzte
+  // `Pointer.fromFunction`, das crashte aber sofort beim ersten
+  // OS-Foreground-Event — der Dart-Isolate-Zustand ist beim
+  // Native->Dart-Übergang aus der Win32-Message-Pump nicht
+  // garantiert aktiv. NativeCallable.listener queued den Call
+  // sauber auf den Isolate-Event-Loop (asynchron).
+  static NativeCallable<_WinEventProcNative>? _winEventCallable;
+
+  // user32 dauerhaft offen halten — DynamicLibrary.open ist
+  // idempotent + cached, das spart aber die wiederholten
+  // Lookups in den callbacks.
+  static DynamicLibrary? _user32;
+  static _IsWindowVisibleDart? _isVisible;
+
   /// Hängt ein paar Win32-Funktionen ins User32-Modul ein und
   /// startet den Foreground-Hook. Idempotent (zweiter Aufruf no-op).
   static void install() {
     if (!Platform.isWindows) return;
     if (_hookHandle != 0) return;
     try {
-      final user32 = DynamicLibrary.open('user32.dll');
-      _ownHwnd = _Win11Corners._findFlutterHwnd(user32);
+      _user32 = DynamicLibrary.open('user32.dll');
+      _isVisible = _user32!.lookupFunction<_IsWindowVisibleNative,
+          _IsWindowVisibleDart>('IsWindowVisible');
+      _ownHwnd = _Win11Corners._findFlutterHwnd(_user32!);
 
       // 1. Snapshot aller aktuell sichtbaren Top-Level-Fenster — damit
       //    der Hook später NUR neu erscheinende HWNDs als Popup wertet.
       _knownHwnds.clear();
-      _enumerateVisibleTopLevels(user32);
+      _enumerateVisibleTopLevels(_user32!);
       // Eigene HWND immer reinpacken (Foreground-Events für uns selbst
       // sollen nie als "Popup" gewertet werden).
       if (_ownHwnd != 0) _knownHwnds.add(_ownHwnd);
       LogService.info(
           '[fs] _ForegroundHook seeded ${_knownHwnds.length} known HWNDs');
 
-      // 2. Hook installieren.
-      final setHook = user32
-          .lookupFunction<_SetWinEventHookNative, _SetWinEventHookDart>(
-              'SetWinEventHook');
-      final cb = Pointer.fromFunction<_WinEventProcNative>(_winEventCallback);
+      // 2. Hook installieren über NativeCallable.listener — der
+      //    Callback wird async via Isolate-Port dispatched, läuft
+      //    also garantiert mit aktivem Isolate-Zustand und darf
+      //    sicher MethodChannel-Calls (setAlwaysOnTop) machen.
+      final setHook = _user32!.lookupFunction<_SetWinEventHookNative,
+          _SetWinEventHookDart>('SetWinEventHook');
+      _winEventCallable =
+          NativeCallable<_WinEventProcNative>.listener(_winEventCallback);
       _hookHandle = setHook(
         _EVENT_SYSTEM_FOREGROUND,
         _EVENT_SYSTEM_FOREGROUND,
         0,
-        cb,
+        _winEventCallable!.nativeFunction,
         0, // alle Prozesse
         0, // alle Threads
         _WINEVENT_OUTOFCONTEXT,
@@ -1450,14 +1470,21 @@ class _ForegroundHook {
     } catch (e, st) {
       LogService.warn('[fs] _ForegroundHook.install threw', error: e, stack: st);
       _hookHandle = 0;
+      _winEventCallable?.close();
+      _winEventCallable = null;
     }
   }
 
   static void uninstall() {
     if (!Platform.isWindows) return;
-    if (_hookHandle == 0) return;
+    if (_hookHandle == 0) {
+      // Ressourcen trotzdem freigeben falls install() halb durchlief.
+      _winEventCallable?.close();
+      _winEventCallable = null;
+      return;
+    }
     try {
-      final user32 = DynamicLibrary.open('user32.dll');
+      final user32 = _user32 ?? DynamicLibrary.open('user32.dll');
       final unhook = user32
           .lookupFunction<_UnhookWinEventNative, _UnhookWinEventDart>(
               'UnhookWinEvent');
@@ -1470,26 +1497,36 @@ class _ForegroundHook {
       _hookHandle = 0;
       _ownHwnd = 0;
       _knownHwnds.clear();
+      _winEventCallable?.close();
+      _winEventCallable = null;
+      _isVisible = null;
+      _user32 = null;
     }
   }
 
   static void _enumerateVisibleTopLevels(DynamicLibrary user32) {
     final enumWindows = user32
         .lookupFunction<_EnumWindowsNative, _EnumWindowsDart>('EnumWindows');
-    final cb = Pointer.fromFunction<_EnumWindowsProcNative>(
-        _enumWindowsCallback, 1);
-    enumWindows(cb, 0);
+    // EnumWindows läuft SYNCHRON, der Callback feuert auf demselben
+    // Thread während EnumWindows auf dem Stack ist. Damit ist der
+    // Isolate-Zustand garantiert aktiv → isolateLocal ist hier
+    // erlaubt und billiger als listener.
+    final cb = NativeCallable<_EnumWindowsProcNative>.isolateLocal(
+        _enumWindowsCallback,
+        exceptionalReturn: 0);
+    try {
+      enumWindows(cb.nativeFunction, 0);
+    } finally {
+      cb.close();
+    }
   }
 
   /// Statischer EnumWindows-Callback — Win32 ruft das pro Fenster auf.
   /// Wir filtern auf IsWindowVisible und stopfen alles ins Set.
   static int _enumWindowsCallback(int hwnd, int lParam) {
     try {
-      final user32 = DynamicLibrary.open('user32.dll');
-      final isVisible = user32
-          .lookupFunction<_IsWindowVisibleNative, _IsWindowVisibleDart>(
-              'IsWindowVisible');
-      if (isVisible(hwnd) != 0) {
+      final isVisible = _isVisible;
+      if (isVisible != null && isVisible(hwnd) != 0) {
         _knownHwnds.add(hwnd);
       }
     } catch (_) {
@@ -1500,9 +1537,10 @@ class _ForegroundHook {
     return 1; // weiter enumerieren
   }
 
-  /// Foreground-Event-Callback. Läuft auf dem Thread, der die
-  /// Message-Loop pumpt — das ist Flutter's Main-Isolate, also OK
-  /// für direkten Dart-Method-Call.
+  /// Foreground-Event-Callback. Wird via NativeCallable.listener
+  /// AUF DEM ISOLATE-EVENT-LOOP dispatched (asynchron, nach
+  /// Rückkehr des OS-Aufrufs). Damit ist hier garantiert
+  /// Dart-Kontext aktiv und windowManager.setAlwaysOnTop ist sicher.
   static void _winEventCallback(
       int hWinEventHook,
       int event,
