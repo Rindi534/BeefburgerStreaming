@@ -1410,7 +1410,9 @@ class _ForegroundHook {
 
   static int _hookHandle = 0;
   static int _ownHwnd = 0;
+  static int _ownMonitor = 0;
   static final Set<int> _knownHwnds = <int>{};
+  static _MonitorFromWindowDart? _monitorFromWindow;
 
   // Persistente NativeCallables. MÜSSEN gespeichert + nach Gebrauch
   // `.close()`-d werden, sonst memleak. v1.9.31 nutzte
@@ -1436,7 +1438,15 @@ class _ForegroundHook {
       _user32 = DynamicLibrary.open('user32.dll');
       _isVisible = _user32!.lookupFunction<_IsWindowVisibleNative,
           _IsWindowVisibleDart>('IsWindowVisible');
+      _monitorFromWindow = _user32!.lookupFunction<
+          _MonitorFromWindowNative,
+          _MonitorFromWindowDart>('MonitorFromWindow');
       _ownHwnd = _Win11Corners._findFlutterHwnd(_user32!);
+      // MONITOR_DEFAULTTONEAREST = 2 — exakt der gleiche Wert den
+      // _Win32Monitor.getCurrentMonitor() benutzt; konsistente Wahl
+      // welcher Monitor "unser" ist.
+      _ownMonitor =
+          _ownHwnd == 0 ? 0 : _monitorFromWindow!(_ownHwnd, 2);
 
       // 1. Snapshot aller aktuell sichtbaren Top-Level-Fenster — damit
       //    der Hook später NUR neu erscheinende HWNDs als Popup wertet.
@@ -1496,10 +1506,12 @@ class _ForegroundHook {
     } finally {
       _hookHandle = 0;
       _ownHwnd = 0;
+      _ownMonitor = 0;
       _knownHwnds.clear();
       _winEventCallable?.close();
       _winEventCallable = null;
       _isVisible = null;
+      _monitorFromWindow = null;
       _user32 = null;
     }
   }
@@ -1560,16 +1572,28 @@ class _ForegroundHook {
 
     final isKnown = _knownHwnds.contains(hwnd);
     _knownHwnds.add(hwnd);
-    if (isKnown) {
-      // Bestehendes Fenster wird Foreground — User klickt nur was an.
-      // AlwaysOnTop bleibt wie's ist, Taskleiste bleibt verdeckt.
+
+    // Auf welchem Monitor liegt das jetzt foregrounded Fenster?
+    final mfw = _monitorFromWindow;
+    final foregroundMonitor = mfw == null ? 0 : mfw(hwnd, 2);
+    final sameMonitorAsPlayer =
+        foregroundMonitor != 0 && foregroundMonitor == _ownMonitor;
+
+    // Entscheidung:
+    //  - NEUES HWND, egal wo → echtes Popup, AlwaysOnTop droppen
+    //    (sonst hängt ein neuer System-Dialog hinter dem Player).
+    //  - BEKANNTES HWND auf UNSEREM Monitor → User holt ein
+    //    bestehendes Programm via Taskleisten-Klick vor; das soll
+    //    funktionieren. AlwaysOnTop droppen damit es sichtbar wird.
+    //  - BEKANNTES HWND auf ANDEREM Monitor → User arbeitet drüben
+    //    weiter; Taskleiste auf dem Vollbild-Monitor soll NICHT
+    //    aufpoppen. Wir machen gar nichts.
+    final shouldDrop = !isKnown || sameMonitorAsPlayer;
+    if (!shouldDrop) {
       return;
     }
-    // Neues HWND → Popup. AlwaysOnTop droppen damit es sichtbar wird.
-    // Bleibt gedroppt bis der User in den Player zurückklickt
-    // (_FullscreenFocusListener.onWindowFocus reaktiviert dann).
-    LogService.info('[fs] new foreground HWND=0x${hwnd.toRadixString(16)} '
-        '→ dropping AlwaysOnTop');
+    LogService.info('[fs] foreground HWND=0x${hwnd.toRadixString(16)} '
+        'known=$isKnown sameMon=$sameMonitorAsPlayer → dropping AlwaysOnTop');
     windowManager.setAlwaysOnTop(false);
   }
 }
