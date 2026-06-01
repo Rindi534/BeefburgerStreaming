@@ -1276,12 +1276,26 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
 
     // Base row: left edge = time, right edge = icon group, middle
     // empty (Spacer). In the non-advanced branch this is the whole row.
-    final baseRow = Row(
-      children: [
-        timeText,
-        const Spacer(),
-        rightGroup,
-      ],
+    //
+    // Horizontal-Insets so dass timeText und das rechte Icon mit den
+    // Kanten der Progressbar oben drüber bündig sind:
+    //   - Slider hat overlayRadius=14 → der visuelle Track beginnt
+    //     14 px innerhalb des Slider-Rahmens. Wir padden die Zeile
+    //     links um 14 px → timeText startet exakt am Track-Anfang.
+    //   - Die Fullscreen-IconButton hat den Material-Default-
+    //     Innenpadding von 8 px; die Glyph-Außenkante sitzt damit
+    //     8 px innerhalb des IconButton-Hitbox-Rands. Mit
+    //     right: 6 (= 14 − 8) sitzt die Glyph-Kante also bündig am
+    //     Track-Ende.
+    final baseRow = Padding(
+      padding: const EdgeInsets.only(left: 14, right: 6),
+      child: Row(
+        children: [
+          timeText,
+          const Spacer(),
+          rightGroup,
+        ],
+      ),
     );
 
     if (!advanced) return baseRow;
@@ -2220,9 +2234,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
             ))
         .toList();
 
+    // Visual on/off-Pärchen wie auf iOS: Musiknote wenn eine echte
+    // Audiospur aktiv ist, durchgestrichene Note wenn nicht. Spiegelt
+    // genau das Pattern der Untertitel-Buttons (subtitles_rounded /
+    // subtitles_off_rounded) und ersetzt das frühere chat_rounded.
+    final audioActive = effectiveActiveId != null;
     return _IconMenuButton(
-      icon: Icons.chat_rounded,
-      iconColor: AppTheme.textSecondary,
+      icon: audioActive
+          ? Icons.music_note_rounded
+          : Icons.music_off_rounded,
+      iconColor:
+          audioActive ? AppTheme.textSecondary : AppTheme.textMuted,
       tooltip: 'Audiospuren',
       entries: entries,
     );
