@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -146,6 +147,13 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
   late final VideoController _videoController;
 
   bool _controlsVisible = true;
+  // Lock-Modus (Spiegelbild zur iOS-Variante): unterdrückt
+  // sämtliche Klicks und Tastenkürzel außer dem 5-Sekunden-Hold
+  // auf das Lock-Icon (zum Aufschließen) und dem Next-Episode-
+  // Button am Folgenende. Während Lock werden Title/Episode-Text,
+  // Time-Text, Progressbar und das große Lock-Icon angezeigt;
+  // sonst nichts. Auto-Hide nach 3 s, jeder Klick reveal'd wieder.
+  bool _isLocked = false;
   Timer? _hideTimer;
   Timer? _progressTimer;
   bool _subtitlesEnabled = true;
@@ -609,6 +617,29 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     }
   }
 
+  /// Aktiviert den Lock-Modus. Controls werden ausgeblendet, alle
+  /// Klicks und Tasten unterdrückt; nur der 5-Sekunden-Hold auf
+  /// das große Schloss-Icon (im _LockedShield) bringt zurück.
+  void _lock() {
+    if (_isLocked) return;
+    setState(() {
+      _isLocked = true;
+      _controlsVisible = false;
+    });
+    _hideTimer?.cancel();
+  }
+
+  /// Aufschließen — wird vom _LockedShield nach dem 5-Sekunden-Hold
+  /// gerufen.
+  void _unlock() {
+    if (!_isLocked) return;
+    setState(() {
+      _isLocked = false;
+      _controlsVisible = true;
+    });
+    _startHideTimer();
+  }
+
   /// A-Toggle: zwischen "Aus" und der ersten echten Audiospur
   /// wechseln — spiegelt das iOS-Verhalten (und unsere C/S-Subtitle-
   /// Toggle-Logik). Vorgänger _cycleAudioTrack hatte ein
@@ -844,6 +875,9 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
             // sluggish. Space + the big round button still toggle
             // playback for users who prefer those.
             onTap: () {
+              // Im Lock-Modus passiert nichts (außer dem Reveal-
+              // Mechanismus im _LockedShield-Listener selbst).
+              if (_isLocked) return;
               if (_isPlaying) {
                 _player.pause();
               } else {
@@ -900,14 +934,40 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 if (_showNextEpisode) _buildNextEpisodeOverlay(),
 
                 // Controls overlay
+                //
+                // Im Lock-Modus opacity 0 + IgnorePointer:true → das
+                // Toolbar/Bottombar-Overlay verschwindet komplett und
+                // wird nicht mehr antippbar. Stattdessen rendert
+                // _LockedShield darüber im Stack, das nur Title +
+                // Episode + Time + Progressbar + großes Schloss-Icon
+                // zeigt.
                 AnimatedOpacity(
-                  opacity: _controlsVisible ? 1.0 : 0.0,
+                  opacity: (_controlsVisible && !_isLocked) ? 1.0 : 0.0,
                   duration: const Duration(milliseconds: 250),
                   child: IgnorePointer(
-                    ignoring: !_controlsVisible,
+                    ignoring: !_controlsVisible || _isLocked,
                     child: _buildControls(),
                   ),
                 ),
+
+                // Lock-Shield — wenn aktiv, schluckt es Klicks/Hovers
+                // außerhalb des Lock-Icons und zeigt nur die vier
+                // Lock-Modus-Elemente an.
+                if (_isLocked)
+                  _LockedShield(
+                    title: widget.title,
+                    episodeTitle: widget.episodeTitle,
+                    position: _position,
+                    duration: _duration,
+                    onUnlock: _unlock,
+                  ),
+
+                // Next-Episode-Overlay nochmal RENDERN wenn locked,
+                // diesmal ÜBER dem Shield damit der Button trotzdem
+                // klickbar ist — User-Wunsch: einzige erlaubte
+                // Interaktion außer dem Lock-Hold.
+                if (_isLocked && _showNextEpisode)
+                  _buildNextEpisodeOverlay(),
 
                 // Playback error overlay — takes precedence, stops controls
                 // from being useful anyway.
@@ -980,21 +1040,16 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           children: [
             // Top bar
             //
-            // Vertikaler Symmetrie-Trick: Bottom-Row nutzt Default-
-            // crossAxisAlignment.center, dadurch sitzt timeText
-            // (~16 px hoch) vertikal mittig in der 40-px-Row →
-            // timeText.Unterkante steht ~12 px über der Row-Unter-
-            // kante. Plus 4 px outer-Padding = 16 px vom Bildschirm-
-            // rand zu timeText-Unterkante.
-            //
-            // Spiegelbild oben: die Title-Column sitzt im Expanded
-            // und stretcht auf Row-Höhe, ihre Default-MainAxis-Start-
-            // Alignment stellt den Serientitel auf Row.top = 0 px
-            // unter den outer-Padding-Innenrand. Mit vertical: 16
-            // hier oben → Serientitel-Oberkante 16 px vom Bildschirm-
-            // rand. Symmetrisch.
+            // vertical: 4 — symmetrisch zum Bottom-Bar-Padding (4).
+            // Serientitel-Oberkante sitzt damit 4 px vom oberen
+            // Bildschirmrand, exakt so wie die Icon-Row-Unterkante
+            // unten 4 px vom unteren Bildschirmrand. timeText ist
+            // in der Row vertikal zentriert (Default) → ~16 px vom
+            // unteren Rand, das ist eine Detail-Asymmetrie die wir
+            // akzeptieren weil die User-Referenz für "Bottom-Kante
+            // des Packages" die Icon-Row ist.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
                   // 6 px Vorlauf damit die Pfeilspitze des Back-
@@ -1054,6 +1109,29 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                       ],
                     ),
                   ),
+                  // Lock-Icon rechts oben (Spiegel des Back-Pfeils
+                  // links): selbe Größe (28-px-Icon in 48x48-Hitbox),
+                  // selbes Padding-Spiel zur Progressbar.
+                  IconButton(
+                    icon: const Icon(
+                      Icons.lock_open_rounded,
+                      color: Colors.white,
+                      size: 28,
+                      shadows: [
+                        Shadow(
+                            blurRadius: 6,
+                            color: Color(0xCC000000),
+                            offset: Offset(0, 1)),
+                      ],
+                    ),
+                    tooltip: 'Sperren (L)',
+                    onPressed: _lock,
+                  ),
+                  // Spiegelbild zum SizedBox(6) auf der linken Seite —
+                  // 6 px Nachlauf damit das Glyph-Right des
+                  // lock_open_rounded auf das Progressbar-Ende
+                  // ausgerichtet sitzt.
+                  const SizedBox(width: 6),
                 ],
               ),
             ),
@@ -1137,12 +1215,12 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 if (_isPlaying) _startHideTimer();
               },
               child: Padding(
-              // bottom: 16 für vertikale Symmetrie mit dem Top-Bar-
-              // Padding (auch 16). Damit ist die Icon-Row-Unterkante
-              // genauso weit vom Bildschirmrand wie die Serientitel-
-              // Oberkante. Davor war's 4 → Icons saßen nur 4 px vom
-              // Bildschirmboden, sichtbar enger als oben.
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              // bottom: 4 — bewusst klein, weil ICONS die Row vertikal
+              // füllen und ihr Box-Bottom = Row-Bottom = 4 px vom
+              // Bildschirmrand. Symmetrie über das Top-Padding auf
+              // den selben Wert. v1.9.39 hatte 16 → User wollte aber
+              // explizit das Bottom kleiner, nicht Top größer.
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
               child: Column(
                 children: [
                   // Inline clip-in-progress banner — non-blocking, sits
@@ -1964,6 +2042,11 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     if (event is KeyUpEvent) return;
     final isRepeat = event is KeyRepeatEvent;
 
+    // Im Lock-Modus alle Shortcuts unterdrücken — User-Wunsch
+    // (mirror der iOS-Lock-Semantik). Aufschließen geht
+    // ausschließlich per 5-Sekunden-Hold auf das Lock-Icon.
+    if (_isLocked) return;
+
     _showControls();
 
     switch (event.logicalKey) {
@@ -2024,6 +2107,10 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       case LogicalKeyboardKey.keyA:
         if (isRepeat) break;
         _toggleAudio();
+        break;
+      case LogicalKeyboardKey.keyL:
+        if (isRepeat) break;
+        _lock();
         break;
       // F or F11: toggle fullscreen. F11 added so users with the
       // OS-wide "F11 = fullscreen" muscle memory don't have to relearn
@@ -3157,4 +3244,333 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
       ),
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Lock-Modus-Overlay (Windows-Pendant zur iOS-Variante).
+// ─────────────────────────────────────────────────────────────────
+//
+// Spielt den Vollbild-Touch-Catcher zusammen mit einer reduzierten
+// Anzeige (Serientitel + Folge oben, Time + Progressbar unten,
+// großes Schloss-Icon oben rechts). Auto-Hide nach 3 s, jeder Klick
+// reveal'd. Aufschließen ausschließlich per 5-Sekunden-Mouse-Down
+// auf das Schloss-Icon (ring zeichnet sich um das Icon, bei 100 %
+// wird onUnlock() gefeuert; Loslassen vor Ablauf reverse't den Ring).
+class _LockedShield extends StatefulWidget {
+  final String title;
+  final String? episodeTitle;
+  final Duration position;
+  final Duration duration;
+  final VoidCallback onUnlock;
+
+  const _LockedShield({
+    required this.title,
+    this.episodeTitle,
+    required this.position,
+    required this.duration,
+    required this.onUnlock,
+  });
+
+  @override
+  State<_LockedShield> createState() => _LockedShieldState();
+}
+
+class _LockedShieldState extends State<_LockedShield>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ring;
+  bool _visible = true;
+  Timer? _hideTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _ring = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 5),
+      reverseDuration: const Duration(milliseconds: 250),
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          widget.onUnlock();
+        }
+      });
+    _scheduleHide();
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    _ring.dispose();
+    super.dispose();
+  }
+
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      setState(() => _visible = false);
+    });
+  }
+
+  void _reveal() {
+    if (!_visible) setState(() => _visible = true);
+    _scheduleHide();
+  }
+
+  void _onDown(PointerDownEvent _) {
+    _hideTimer?.cancel();
+    if (!_visible) setState(() => _visible = true);
+    _ring.forward();
+  }
+
+  void _onUp(PointerEvent _) {
+    if (!mounted) return;
+    if (_ring.status == AnimationStatus.forward) _ring.reverse();
+    _scheduleHide();
+  }
+
+  String _formatDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    final s = d.inSeconds.remainder(60);
+    if (h > 0) {
+      return '${h.toString().padLeft(2, '0')}:'
+          '${m.toString().padLeft(2, '0')}:'
+          '${s.toString().padLeft(2, '0')}';
+    }
+    return '${m.toString().padLeft(2, '0')}:'
+        '${s.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final durMs = widget.duration.inMilliseconds;
+    final sliderValue = durMs <= 0
+        ? 0.0
+        : widget.position.inMilliseconds
+            .toDouble()
+            .clamp(0.0, durMs.toDouble());
+
+    return Stack(
+      children: [
+        // 1) Full-screen Listener — absorbiert alle Pointer-Events
+        //    UND nutzt jeden Klick um die UI-Elemente neu für 3 s
+        //    einzublenden. behavior:opaque blockt das Durchschlagen
+        //    zur Video-Layer.
+        Positioned.fill(
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (_) => _reveal(),
+            child: const SizedBox.expand(),
+          ),
+        ),
+
+        // 2) Top: Title + Episode — read-only, ignoring touches.
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: AnimatedOpacity(
+            opacity: _visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: IgnorePointer(
+              ignoring: true,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(22, 4, 16, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        shadows: [
+                          Shadow(
+                              blurRadius: 6,
+                              color: Color(0xCC000000),
+                              offset: Offset(0, 1)),
+                        ],
+                      ),
+                    ),
+                    if (widget.episodeTitle != null)
+                      Text(
+                        widget.episodeTitle!,
+                        style: const TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 13,
+                          shadows: [
+                            Shadow(
+                                blurRadius: 6,
+                                color: Color(0xCC000000),
+                                offset: Offset(0, 1)),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+
+        // 3) Bottom: Read-only Slider + Time-Text — IgnorePointer
+        //    sorgt dafür dass damit nicht interagiert werden kann.
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: AnimatedOpacity(
+            opacity: _visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: IgnorePointer(
+              ignoring: true,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3,
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 7,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 14,
+                        ),
+                        activeTrackColor: AppTheme.accent,
+                        inactiveTrackColor: AppTheme.progressBackground,
+                        thumbColor: AppTheme.accent,
+                      ),
+                      child: Slider(
+                        value: sliderValue,
+                        min: 0,
+                        max: durMs > 0 ? durMs.toDouble() : 1,
+                        onChanged: (_) {},
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 14, right: 3),
+                      child: Row(
+                        children: [
+                          Text(
+                            '${_formatDuration(widget.position)} / '
+                            '${_formatDuration(widget.duration)}',
+                            style: const TextStyle(
+                              color: AppTheme.textSecondary,
+                              fontSize: 13,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                              shadows: [
+                                Shadow(
+                                  blurRadius: 6,
+                                  color: Color(0xCC000000),
+                                  offset: Offset(0, 1),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Spacer(),
+                          // Platzhalter genau in der Größe des
+                          // großen Lock-Icons (60x60) damit das
+                          // Padding-Layout der Bar visuell symmetrisch
+                          // zur unlocked-Variante bleibt (wo rechts
+                          // die Icon-Group sitzt).
+                          const SizedBox(width: 60),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+
+        // 4) Top-right: großes Schloss-Icon mit Hold-to-Unlock + Ring.
+        //    Position so dass die Glyph-Oberkante ~auf Höhe der Title-
+        //    Oberkante sitzt (top: -10) und der Glyph-Rechtsrand auf
+        //    das Progressbar-Ende fällt.
+        Positioned(
+          top: -10,
+          right: 4,
+          width: 60,
+          height: 60,
+          child: AnimatedOpacity(
+            opacity: _visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: IgnorePointer(
+              ignoring: !_visible,
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: _onDown,
+                onPointerUp: _onUp,
+                onPointerCancel: _onUp,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: AnimatedBuilder(
+                    animation: _ring,
+                    builder: (context, _) {
+                      return CustomPaint(
+                        painter: _UnlockRingPainter(
+                          progress: _ring.value,
+                          color: AppTheme.accent,
+                        ),
+                        child: const Center(
+                          child: Icon(
+                            Icons.lock_rounded,
+                            color: Colors.white,
+                            size: 36,
+                            shadows: [
+                              Shadow(
+                                  blurRadius: 6,
+                                  color: Color(0xCC000000),
+                                  offset: Offset(0, 1)),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Zeichnet einen kreisförmigen Fortschrittsring um den Lock-Button
+/// während des 5-Sekunden-Holds. Start oben (12-Uhr), Uhrzeigersinn.
+class _UnlockRingPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  const _UnlockRingPainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = math.min(size.width, size.height) / 2 - 2;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -math.pi / 2,
+      2 * math.pi * progress,
+      false,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_UnlockRingPainter old) =>
+      old.progress != progress || old.color != color;
 }
