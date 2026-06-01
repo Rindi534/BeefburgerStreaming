@@ -1040,16 +1040,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           children: [
             // Top bar
             //
-            // vertical: 4 — symmetrisch zum Bottom-Bar-Padding (4).
-            // Serientitel-Oberkante sitzt damit 4 px vom oberen
-            // Bildschirmrand, exakt so wie die Icon-Row-Unterkante
-            // unten 4 px vom unteren Bildschirmrand. timeText ist
-            // in der Row vertikal zentriert (Default) → ~16 px vom
-            // unteren Rand, das ist eine Detail-Asymmetrie die wir
-            // akzeptieren weil die User-Referenz für "Bottom-Kante
-            // des Packages" die Icon-Row ist.
+            // vertical: 24 — Spiegelbild zum unteren timeText-Abstand.
+            // Math: Slider sitzt im oberen Bereich der Bottom-Area,
+            // sein Track-Unterrand bis zur timeText-Oberkante ist
+            // ~23 px (28 Slider-Höhe + 11 Row-Centering − Slider-
+            // Track-Bottom-Offset 15.5). User-Vorgabe: dieselbe
+            // Distanz oben zwischen Bildschirmrand und Serientitel-
+            // Oberkante. Title sitzt im Expanded.Column mit
+            // mainAxis.start → title.top = row.top = 24 vom
+            // Bildschirmrand.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
               child: Row(
                 children: [
                   // 6 px Vorlauf damit die Pfeilspitze des Back-
@@ -1124,7 +1125,7 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                             offset: Offset(0, 1)),
                       ],
                     ),
-                    tooltip: 'Sperren (L)',
+                    tooltip: 'Sperren',
                     onPressed: _lock,
                   ),
                   // Spiegelbild zum SizedBox(6) auf der linken Seite —
@@ -1215,12 +1216,14 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 if (_isPlaying) _startHideTimer();
               },
               child: Padding(
-              // bottom: 4 — bewusst klein, weil ICONS die Row vertikal
-              // füllen und ihr Box-Bottom = Row-Bottom = 4 px vom
-              // Bildschirmrand. Symmetrie über das Top-Padding auf
-              // den selben Wert. v1.9.39 hatte 16 → User wollte aber
-              // explizit das Bottom kleiner, nicht Top größer.
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              // bottom: 12 — so dass timeText.Unterkante (in der
+              // 40-px-Row vertikal zentriert, Box-Höhe ~18 px →
+              // Offset ~11 px zur Row-Unterkante) ≈ 23 px vom
+              // Bildschirmrand entfernt sitzt. Das matched den
+              // Abstand timeText-Oberkante → Progressbar-Unterkante
+              // (Slider intern ~13 px Overhead + 11 px Centering im
+              // 40-px-Row).
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: Column(
                 children: [
                   // Inline clip-in-progress banner — non-blocking, sits
@@ -3375,7 +3378,10 @@ class _LockedShieldState extends State<_LockedShield>
             child: IgnorePointer(
               ignoring: true,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(22, 4, 16, 4),
+                // top/bottom 24 spiegelt das Top-Bar-Padding des
+                // Live-Controls-Overlays — Title-Oberkante sitzt
+                // damit auf derselben Y-Linie wie wenn unlocked.
+                padding: const EdgeInsets.fromLTRB(22, 24, 16, 4),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
@@ -3427,7 +3433,10 @@ class _LockedShieldState extends State<_LockedShield>
             child: IgnorePointer(
               ignoring: true,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                // bottom: 12 matched das Live-Controls-Overlay damit
+                // Slider + timeText hier auf derselben Y-Position
+                // wie im unlocked-Zustand sitzen.
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -3453,32 +3462,24 @@ class _LockedShieldState extends State<_LockedShield>
                     ),
                     Padding(
                       padding: const EdgeInsets.only(left: 14, right: 3),
-                      child: Row(
-                        children: [
-                          Text(
-                            '${_formatDuration(widget.position)} / '
-                            '${_formatDuration(widget.duration)}',
-                            style: const TextStyle(
-                              color: AppTheme.textSecondary,
-                              fontSize: 13,
-                              fontFeatures: [FontFeature.tabularFigures()],
-                              shadows: [
-                                Shadow(
-                                  blurRadius: 6,
-                                  color: Color(0xCC000000),
-                                  offset: Offset(0, 1),
-                                ),
-                              ],
-                            ),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '${_formatDuration(widget.position)} / '
+                          '${_formatDuration(widget.duration)}',
+                          style: const TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 13,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                            shadows: [
+                              Shadow(
+                                blurRadius: 6,
+                                color: Color(0xCC000000),
+                                offset: Offset(0, 1),
+                              ),
+                            ],
                           ),
-                          const Spacer(),
-                          // Platzhalter genau in der Größe des
-                          // großen Lock-Icons (60x60) damit das
-                          // Padding-Layout der Bar visuell symmetrisch
-                          // zur unlocked-Variante bleibt (wo rechts
-                          // die Icon-Group sitzt).
-                          const SizedBox(width: 60),
-                        ],
+                        ),
                       ),
                     ),
                   ],
@@ -3488,15 +3489,25 @@ class _LockedShieldState extends State<_LockedShield>
           ),
         ),
 
-        // 4) Top-right: großes Schloss-Icon mit Hold-to-Unlock + Ring.
-        //    Position so dass die Glyph-Oberkante ~auf Höhe der Title-
-        //    Oberkante sitzt (top: -10) und der Glyph-Rechtsrand auf
-        //    das Progressbar-Ende fällt.
+        // 4) Top-right: Schloss-Icon (locked) mit Hold-to-Unlock + Ring.
+        //    GLEICHE GRÖSSE UND POSITION wie das unlocked Lock-Icon
+        //    in der Top-Toolbar — User-Wunsch in Windows die zwei
+        //    Zustände nicht in Größe/Position auseinander driften
+        //    zu lassen.
+        //
+        //    Position-Math: Top-Padding 24 + IconButton-Internes-
+        //    Padding 10 → unlocked-Glyph-Oberkante 34 von Bild-
+        //    schirm-Top. Hier Positioned(top: 24, ... height: 48):
+        //    Box.top 24 + Center-Offset 10 (= (48−28)/2) → Glyph
+        //    top 34. ✓ Identisch.
+        //    Horizontal: unlocked IconButton.right = row.right − 6
+        //    SizedBox = screen.right − 22. Hier right: 22 → Box.right
+        //    = screen.right − 22. ✓
         Positioned(
-          top: -10,
-          right: 4,
-          width: 60,
-          height: 60,
+          top: 24,
+          right: 22,
+          width: 48,
+          height: 48,
           child: AnimatedOpacity(
             opacity: _visible ? 1.0 : 0.0,
             duration: const Duration(milliseconds: 250),
@@ -3521,7 +3532,7 @@ class _LockedShieldState extends State<_LockedShield>
                           child: Icon(
                             Icons.lock_rounded,
                             color: Colors.white,
-                            size: 36,
+                            size: 28,
                             shadows: [
                               Shadow(
                                   blurRadius: 6,
