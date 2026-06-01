@@ -609,14 +609,22 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     }
   }
 
-  void _cycleAudioTrack() {
-    if (_audioTracks.length <= 1) return;
-    final currentIndex = _audioTracks.indexWhere(
-      (t) => t.id == _activeAudioTrack?.id,
-    );
-    final nextIndex = (currentIndex + 1) % _audioTracks.length;
-    final nextTrack = _audioTracks[nextIndex];
-    _player.setAudioTrack(nextTrack);
+  /// A-Toggle: zwischen "Aus" und der ersten echten Audiospur
+  /// wechseln — spiegelt das iOS-Verhalten (und unsere C/S-Subtitle-
+  /// Toggle-Logik). Vorgänger _cycleAudioTrack hatte ein
+  /// `length <= 1` Early-Return, mit nur einer Spur tat A also gar
+  /// nichts; jetzt geht's auch bei einer einzigen Spur.
+  Future<void> _toggleAudio() async {
+    final currentId = _activeAudioTrack?.id;
+    final isOff = currentId == null || currentId == AudioTrack.no().id;
+
+    if (isOff) {
+      if (_audioTracks.isNotEmpty) {
+        await _player.setAudioTrack(_audioTracks.first);
+      }
+    } else {
+      await _player.setAudioTrack(AudioTrack.no());
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -972,17 +980,21 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           children: [
             // Top bar
             //
-            // vertical: 4 (statt 8 vorher) damit der Abstand
-            // Bildschirm-Oberkante → Serientitel-Oberkante exakt
-            // dem Abstand Zeit-Unterkante → Bildschirm-Unterkante
-            // entspricht. Beides sind dann 4 px. Voraussetzung:
-            //   - Bottom-Row nutzt crossAxisAlignment.end (Zeit-
-            //     Unterkante an Row-Unterkante).
-            //   - Top-Row hat die Title-Column im Expanded, die
-            //     stretcht auf Row-Höhe und stellt die Texte per
-            //     Default-MainAxisAlignment ganz oben an.
+            // Vertikaler Symmetrie-Trick: Bottom-Row nutzt Default-
+            // crossAxisAlignment.center, dadurch sitzt timeText
+            // (~16 px hoch) vertikal mittig in der 40-px-Row →
+            // timeText.Unterkante steht ~12 px über der Row-Unter-
+            // kante. Plus 4 px outer-Padding = 16 px vom Bildschirm-
+            // rand zu timeText-Unterkante.
+            //
+            // Spiegelbild oben: die Title-Column sitzt im Expanded
+            // und stretcht auf Row-Höhe, ihre Default-MainAxis-Start-
+            // Alignment stellt den Serientitel auf Row.top = 0 px
+            // unter den outer-Padding-Innenrand. Mit vertical: 16
+            // hier oben → Serientitel-Oberkante 16 px vom Bildschirm-
+            // rand. Symmetrisch.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               child: Row(
                 children: [
                   // 6 px Vorlauf damit die Pfeilspitze des Back-
@@ -1324,18 +1336,12 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     //     Track-Ende.
     final baseRow = Padding(
       padding: const EdgeInsets.only(left: 14, right: 6),
+      // Default-crossAxisAlignment (center) damit timeText vertikal
+      // im selben Niveau wie die Icon-Glyphen sitzt (= nahe an der
+      // Progressbar oben drüber). Vertikale Symmetrie zum Top-
+      // Package wird stattdessen über das Top-Padding eingestellt
+      // (siehe dort).
       child: Row(
-        // crossAxisAlignment.end → timeText.Unterkante sitzt an
-        // Row.Unterkante (= bottom padding 4 vom Bildschirmrand).
-        // Spiegelbild zum Top-Package das mit vertical:4 + Column-
-        // Default-mainAxisAlignment.start sein Title.Oberkante an
-        // der Row.Oberkante (4 px vom Bildschirmrand) hat. Beide
-        // Pakete halten somit denselben Bildschirm-Rand-Abstand.
-        // Icons sind 40x40 = Row-Höhe und füllen die Row vertikal
-        // komplett aus, ihr glyphisches Zentrum bleibt also bei
-        // Row-Center; nur der Zeit-Text wandert sichtbar an die
-        // Row-Unterkante.
-        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           timeText,
           const Spacer(),
@@ -2006,7 +2012,7 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
         break;
       case LogicalKeyboardKey.keyA:
         if (isRepeat) break;
-        _cycleAudioTrack();
+        _toggleAudio();
         break;
       // F or F11: toggle fullscreen. F11 added so users with the
       // OS-wide "F11 = fullscreen" muscle memory don't have to relearn
