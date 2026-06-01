@@ -1040,17 +1040,11 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           children: [
             // Top bar
             //
-            // vertical: 24 — Spiegelbild zum unteren timeText-Abstand.
-            // Math: Slider sitzt im oberen Bereich der Bottom-Area,
-            // sein Track-Unterrand bis zur timeText-Oberkante ist
-            // ~23 px (28 Slider-Höhe + 11 Row-Centering − Slider-
-            // Track-Bottom-Offset 15.5). User-Vorgabe: dieselbe
-            // Distanz oben zwischen Bildschirmrand und Serientitel-
-            // Oberkante. Title sitzt im Expanded.Column mit
-            // mainAxis.start → title.top = row.top = 24 vom
-            // Bildschirmrand.
+            // vertical: 16 — User-Justierung von 24 (zu viel) auf 16.
+            // Title.top und lock IconButton.top liegen damit 16 px
+            // vom oberen Bildschirmrand entfernt.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               child: Row(
                 children: [
                   // 6 px Vorlauf damit die Pfeilspitze des Back-
@@ -1128,11 +1122,16 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                     tooltip: 'Sperren',
                     onPressed: _lock,
                   ),
-                  // Spiegelbild zum SizedBox(6) auf der linken Seite —
-                  // 6 px Nachlauf damit das Glyph-Right des
-                  // lock_open_rounded auf das Progressbar-Ende
-                  // ausgerichtet sitzt.
-                  const SizedBox(width: 6),
+                  // 1 px Nachlauf damit das Glyph-Right des
+                  // lock_open_rounded auf das Progressbar-Ende (=
+                  // Glyph-Right des Fullscreen-Icons unten)
+                  // ausgerichtet sitzt. Math: 48x48-IconButton mit
+                  // 28-px-Icon hat 10 px internes Padding, Material-
+                  // Icon hat ~3 px LSB-rechts → Glyph-Right =
+                  // IconButton.right − 13. Für Glyph-Right = row.right
+                  // − 14 (=overlayRadius Slider): IconButton.right =
+                  // row.right − 1 → SizedBox(1).
+                  const SizedBox(width: 1),
                 ],
               ),
             ),
@@ -1216,14 +1215,8 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 if (_isPlaying) _startHideTimer();
               },
               child: Padding(
-              // bottom: 12 — so dass timeText.Unterkante (in der
-              // 40-px-Row vertikal zentriert, Box-Höhe ~18 px →
-              // Offset ~11 px zur Row-Unterkante) ≈ 23 px vom
-              // Bildschirmrand entfernt sitzt. Das matched den
-              // Abstand timeText-Oberkante → Progressbar-Unterkante
-              // (Slider intern ~13 px Overhead + 11 px Centering im
-              // 40-px-Row).
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              // bottom: 8 — User-Justierung von 12 (zu viel) auf 8.
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Column(
                 children: [
                   // Inline clip-in-progress banner — non-blocking, sits
@@ -3378,10 +3371,10 @@ class _LockedShieldState extends State<_LockedShield>
             child: IgnorePointer(
               ignoring: true,
               child: Padding(
-                // top/bottom 24 spiegelt das Top-Bar-Padding des
-                // Live-Controls-Overlays — Title-Oberkante sitzt
-                // damit auf derselben Y-Linie wie wenn unlocked.
-                padding: const EdgeInsets.fromLTRB(22, 24, 16, 4),
+                // top 16 spiegelt das Top-Bar-Padding des Live-
+                // Controls-Overlays — Title-Oberkante sitzt damit
+                // auf derselben Y-Linie wie wenn unlocked.
+                padding: const EdgeInsets.fromLTRB(22, 16, 16, 4),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
@@ -3433,10 +3426,10 @@ class _LockedShieldState extends State<_LockedShield>
             child: IgnorePointer(
               ignoring: true,
               child: Padding(
-                // bottom: 12 matched das Live-Controls-Overlay damit
+                // bottom: 8 matched das Live-Controls-Overlay damit
                 // Slider + timeText hier auf derselben Y-Position
                 // wie im unlocked-Zustand sitzen.
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -3490,22 +3483,17 @@ class _LockedShieldState extends State<_LockedShield>
         ),
 
         // 4) Top-right: Schloss-Icon (locked) mit Hold-to-Unlock + Ring.
-        //    GLEICHE GRÖSSE UND POSITION wie das unlocked Lock-Icon
-        //    in der Top-Toolbar — User-Wunsch in Windows die zwei
-        //    Zustände nicht in Größe/Position auseinander driften
-        //    zu lassen.
+        //    GLEICHE GRÖSSE UND POSITION wie das unlocked Lock-Icon.
         //
-        //    Position-Math: Top-Padding 24 + IconButton-Internes-
-        //    Padding 10 → unlocked-Glyph-Oberkante 34 von Bild-
-        //    schirm-Top. Hier Positioned(top: 24, ... height: 48):
-        //    Box.top 24 + Center-Offset 10 (= (48−28)/2) → Glyph
-        //    top 34. ✓ Identisch.
-        //    Horizontal: unlocked IconButton.right = row.right − 6
-        //    SizedBox = screen.right − 22. Hier right: 22 → Box.right
-        //    = screen.right − 22. ✓
+        //    Math: Top-Padding 16 + IconButton.top im Row 0 →
+        //    unlocked IconButton.top 16 von Bildschirm-Top. Hier
+        //    Positioned(top: 16, height: 48) → Box.top 16. ✓
+        //    Horizontal: unlocked IconButton.right = row.right − 1
+        //    (SizedBox 1) = screen.right − 17. Hier right: 17 →
+        //    Box.right = screen.right − 17. ✓
         Positioned(
-          top: 24,
-          right: 22,
+          top: 16,
+          right: 17,
           width: 48,
           height: 48,
           child: AnimatedOpacity(
