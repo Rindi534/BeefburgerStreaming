@@ -971,8 +971,18 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           child: Column(
           children: [
             // Top bar
+            //
+            // vertical: 4 (statt 8 vorher) damit der Abstand
+            // Bildschirm-Oberkante → Serientitel-Oberkante exakt
+            // dem Abstand Zeit-Unterkante → Bildschirm-Unterkante
+            // entspricht. Beides sind dann 4 px. Voraussetzung:
+            //   - Bottom-Row nutzt crossAxisAlignment.end (Zeit-
+            //     Unterkante an Row-Unterkante).
+            //   - Top-Row hat die Title-Column im Expanded, die
+            //     stretcht auf Row-Höhe und stellt die Texte per
+            //     Default-MainAxisAlignment ganz oben an.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
                   // 6 px Vorlauf damit die Pfeilspitze des Back-
@@ -1315,6 +1325,17 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     final baseRow = Padding(
       padding: const EdgeInsets.only(left: 14, right: 6),
       child: Row(
+        // crossAxisAlignment.end → timeText.Unterkante sitzt an
+        // Row.Unterkante (= bottom padding 4 vom Bildschirmrand).
+        // Spiegelbild zum Top-Package das mit vertical:4 + Column-
+        // Default-mainAxisAlignment.start sein Title.Oberkante an
+        // der Row.Oberkante (4 px vom Bildschirmrand) hat. Beide
+        // Pakete halten somit denselben Bildschirm-Rand-Abstand.
+        // Icons sind 40x40 = Row-Höhe und füllen die Row vertikal
+        // komplett aus, ihr glyphisches Zentrum bleibt also bei
+        // Row-Center; nur der Zeit-Text wandert sichtbar an die
+        // Row-Unterkante.
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           timeText,
           const Spacer(),
@@ -1599,10 +1620,16 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       waitDuration: const Duration(milliseconds: 300),
       child: IconButton(
+        padding: const EdgeInsets.all(8),
+        constraints: const BoxConstraints(
+          minWidth: 40,
+          minHeight: 40,
+        ),
+        iconSize: 24,
         icon: const Icon(
           Icons.skip_next_rounded,
           color: AppTheme.textSecondary,
-          size: 26,
+          size: 24,
         ),
         onPressed: () {
           _isCompleted = true;
@@ -2062,6 +2089,12 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
 
   Widget _buildScreenshotButton() {
     return IconButton(
+      padding: const EdgeInsets.all(8),
+      constraints: const BoxConstraints(
+        minWidth: 40,
+        minHeight: 40,
+      ),
+      iconSize: 24,
       icon: Icon(
         Icons.photo_camera_rounded,
         color: _isExporting ? AppTheme.textMuted : AppTheme.textSecondary,
@@ -2136,6 +2169,12 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
       alignment: Alignment.center,
       children: [
         IconButton(
+          padding: const EdgeInsets.all(8),
+          constraints: const BoxConstraints(
+            minWidth: 40,
+            minHeight: 40,
+          ),
+          iconSize: 24,
           icon: Icon(
             inClipMode
                 ? Icons.stop_circle_rounded
@@ -2464,6 +2503,12 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           onEnter: (_) => _cancelVolumeHide(),
           onExit: (_) => _scheduleVolumeHide(),
           child: IconButton(
+            padding: const EdgeInsets.all(8),
+            constraints: const BoxConstraints(
+              minWidth: 40,
+              minHeight: 40,
+            ),
+            iconSize: 24,
             icon: Icon(
               // Keep the colour stable in both states — the muted
               // glyph itself (durchgestrichener Lautsprecher via
@@ -3073,7 +3118,19 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
             _triggerHovered = false;
             _scheduleAutoClose();
           },
+          // Explicit 40x40 + padding 8 statt Material-Default
+          // (48x48) damit der Trigger optisch GENAU mit den anderen
+          // 40x40-Buttons in der Toolbar (Sleep, Volume, Next,
+          // Fullscreen, Screenshot, Clip) übereinstimmt. Vorher
+          // hatte _IconMenuButton einen sichtbar größeren Hover-
+          // Splash als die Geschwister.
           child: IconButton(
+            padding: const EdgeInsets.all(8),
+            constraints: const BoxConstraints(
+              minWidth: 40,
+              minHeight: 40,
+            ),
+            iconSize: widget.iconSize,
             icon: Icon(widget.icon,
                 color: widget.iconColor, size: widget.iconSize),
             tooltip: widget.tooltip,
