@@ -1137,10 +1137,12 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
                 if (_isPlaying) _startHideTimer();
               },
               child: Padding(
-              // Keep a little extra room at the bottom so IconButton
-              // hover circles (~48 px) don't clip against the window
-              // edge — previously 8 which cut the splash in half.
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              // bottom: 16 für vertikale Symmetrie mit dem Top-Bar-
+              // Padding (auch 16). Damit ist die Icon-Row-Unterkante
+              // genauso weit vom Bildschirmrand wie die Serientitel-
+              // Oberkante. Davor war's 4 → Icons saßen nur 4 px vom
+              // Bildschirmboden, sichtbar enger als oben.
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Column(
                 children: [
                   // Inline clip-in-progress banner — non-blocking, sits
