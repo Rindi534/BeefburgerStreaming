@@ -1335,7 +1335,16 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     //     right: 6 (= 14 − 8) sitzt die Glyph-Kante also bündig am
     //     Track-Ende.
     final baseRow = Padding(
-      padding: const EdgeInsets.only(left: 14, right: 6),
+      // right: 3 (statt 6 in v1.9.37) damit die SICHTBARE Glyph-
+      // Außenkante des Fullscreen-Icons bündig an die Progressbar-
+      // Rechtkante landet. Math vorher (6) richtete den IconButton-
+      // Bounding-Box-Rand aus (IconButton 8 px innen + Track 14 px
+      // innen → Differenz 6); die fullscreen_rounded-Glyphe hat aber
+      // im Material-24-px-Viewbox ~3 px transparenten Innenrand
+      // rechts, ihre VISUELLE Außenkante saß damit 3 px links vom
+      // Track-Ende. -3 px schiebt die ganze rechte Icon-Gruppe (die
+      // alle gemeinsam right-anchored sind) deckungsgleich.
+      padding: const EdgeInsets.only(left: 14, right: 3),
       // Default-crossAxisAlignment (center) damit timeText vertikal
       // im selben Niveau wie die Icon-Glyphen sitzt (= nahe an der
       // Progressbar oben drüber). Vertikale Symmetrie zum Top-
