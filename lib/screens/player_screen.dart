@@ -3453,24 +3453,35 @@ class _LockedShieldState extends State<_LockedShield>
                         onChanged: (_) {},
                       ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.only(left: 14, right: 3),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          '${_formatDuration(widget.position)} / '
-                          '${_formatDuration(widget.duration)}',
-                          style: const TextStyle(
-                            color: AppTheme.textSecondary,
-                            fontSize: 13,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                            shadows: [
-                              Shadow(
-                                blurRadius: 6,
-                                color: Color(0xCC000000),
-                                offset: Offset(0, 1),
-                              ),
-                            ],
+                    // 40-px-hoher Container damit der timeText
+                    // GENAU dort vertikal sitzt wo er im unlocked-
+                    // Layout sitzt (40-px-Row mit den Buttons in
+                    // der Mitte, Text vertikal zentriert). Ohne
+                    // diesen SizedBox kollabiert die Box auf
+                    // text-height ~18 px → der Slider rückt sichtbar
+                    // näher an die Bildschirmkante als beim
+                    // unlocked-Zustand.
+                    SizedBox(
+                      height: 40,
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 14, right: 3),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '${_formatDuration(widget.position)} / '
+                            '${_formatDuration(widget.duration)}',
+                            style: const TextStyle(
+                              color: AppTheme.textSecondary,
+                              fontSize: 13,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                              shadows: [
+                                Shadow(
+                                  blurRadius: 6,
+                                  color: Color(0xCC000000),
+                                  offset: Offset(0, 1),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -3483,17 +3494,14 @@ class _LockedShieldState extends State<_LockedShield>
         ),
 
         // 4) Top-right: Schloss-Icon (locked) mit Hold-to-Unlock + Ring.
-        //    GLEICHE GRÖSSE UND POSITION wie das unlocked Lock-Icon.
-        //
-        //    Math: Top-Padding 16 + IconButton.top im Row 0 →
-        //    unlocked IconButton.top 16 von Bildschirm-Top. Hier
-        //    Positioned(top: 16, height: 48) → Box.top 16. ✓
-        //    Horizontal: unlocked IconButton.right = row.right − 1
-        //    (SizedBox 1) = screen.right − 17. Hier right: 17 →
-        //    Box.right = screen.right − 17. ✓
+        //    Empirische Justierung (top 16→14, right 17→14) damit
+        //    der Glyph beim Lock/Unlock-Übergang nicht visuell
+        //    "wandert" — Material's IconButton hat anscheinend
+        //    minimale interne Offsets die meine reine Center+Icon-
+        //    Konstruktion in der Box nicht hat.
         Positioned(
-          top: 16,
-          right: 17,
+          top: 14,
+          right: 14,
           width: 48,
           height: 48,
           child: AnimatedOpacity(
