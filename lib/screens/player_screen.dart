@@ -975,6 +975,13 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 children: [
+                  // 6 px Vorlauf damit die Pfeilspitze des Back-
+                  // Buttons exakt am Progressbar-Anfang unten sitzt.
+                  // Math: Slider's Track beginnt overlayRadius=14 px
+                  // innerhalb des Slider-Rahmens, die IconButton hat
+                  // 8 px Material-Default-Padding; 14 - 8 = 6 px
+                  // extra leading vorm IconButton.
+                  const SizedBox(width: 6),
                   IconButton(
                     icon: const Icon(
                       Icons.arrow_back_rounded,
@@ -1234,7 +1241,10 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           _buildSubtitleDropdown(),
           const SizedBox(width: 6),
         ],
-        if (_audioTracks.length > 1) ...[
+        // Audio-Dropdown immer anzeigen sobald es überhaupt eine Spur
+        // gibt — auch bei nur einer, damit der User die Aus-Option
+        // erreicht. Spiegelt das iOS-Verhalten.
+        if (_audioTracks.isNotEmpty) ...[
           _buildAudioDropdown(),
           const SizedBox(width: 6),
         ],
@@ -1244,16 +1254,31 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
           _buildNextEpisodeButton(),
           const SizedBox(width: 6),
         ],
-        IconButton(
-          icon: Icon(
-            _isFullscreen
-                ? Icons.fullscreen_exit_rounded
-                : Icons.fullscreen_rounded,
-            color: AppTheme.textSecondary,
-            size: 28,
+        // Fullscreen-Toggle in derselben Wrap-Strategie wie die
+        // Geschwister (Sleep, Subtitle, Audio, Volume): explizit
+        // 40x40 Constraint-Box + iconSize 24 + 8 padding. Vorher war
+        // hier ein bare IconButton mit size=28, das produzierte einen
+        // sichtbar größeren Hover-Splash und mehr leading whitespace
+        // als die Nachbarn → User-Beschwerde v1.9.35.
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: IconButton(
+            padding: const EdgeInsets.all(8),
+            constraints: const BoxConstraints(
+              minWidth: 40,
+              minHeight: 40,
+            ),
+            iconSize: 24,
+            icon: Icon(
+              _isFullscreen
+                  ? Icons.fullscreen_exit_rounded
+                  : Icons.fullscreen_rounded,
+              color: AppTheme.textSecondary,
+              size: 24,
+            ),
+            onPressed: _toggleFullscreen,
+            tooltip: _isFullscreen ? 'Vollbild beenden' : 'Vollbild',
           ),
-          onPressed: _toggleFullscreen,
-          tooltip: _isFullscreen ? 'Vollbild beenden' : 'Vollbild',
         ),
       ],
     );
@@ -2207,44 +2232,56 @@ class _DesktopPlayerScreenState extends ConsumerState<_DesktopPlayerScreen> {
     );
   }
 
-  /// Audio track dropdown. Filled speech-bubble icon reads as "voice /
-  /// language". No "Aus" entry because muting is the volume button's
-  /// job.
+  /// Audio track dropdown — mirror der Subtitle-Variante: enthält eine
+  /// "Aus"-Option (User-Wunsch v1.9.35 für Symmetrie mit iOS, wo die
+  /// Spur-Liste immer "Aus + Spur 1 + …" zeigt selbst bei nur einer
+  /// Spur). Aus setzt media_kits AudioTrack.no() — entspricht aid=no
+  /// in mpv. Icon ist Musiknote (aktiv) bzw. durchgestrichen (aus).
   Widget _buildAudioDropdown() {
-    // Same 'auto' sentinel issue as subtitles: mpv's initial track
-    // event reports id='auto' for its default audio pick, which
-    // never matches any real track id. Fall back to the first track
-    // — mpv's default selection resolves to exactly that.
+    // "Aus" = Audio explizit deaktiviert (id == 'no'-Sentinel), kein
+    // aktiver Track bekannt, oder noch nie ein Track-Event empfangen.
     final activeId = _activeAudioTrack?.id;
-    final effectiveActiveId = (activeId == null || activeId == 'auto')
-        ? (_audioTracks.isNotEmpty ? _audioTracks.first.id : null)
-        : activeId;
+    final isOff = activeId == null || activeId == AudioTrack.no().id;
 
-    final entries = _audioTracks
-        .map((track) => _MenuEntry(
-              label: track.title ??
-                  track.language ??
-                  'Spur ${track.id}',
-              selected:
-                  effectiveActiveId != null && effectiveActiveId == track.id,
-              onTap: () {
-                _player.setAudioTrack(track);
-                _startHideTimer();
-              },
-            ))
-        .toList();
+    // mpv liefert beim ersten Track-Event 'auto' als Default-Wahl —
+    // matched nie eine echte Track-ID. Auf die erste echte Spur
+    // zurückmappen (entspricht mpvs Default-Auswahl).
+    final activeIsReal = !isOff;
+    final effectiveActiveId = !activeIsReal
+        ? null
+        : (activeId == 'auto'
+            ? (_audioTracks.isNotEmpty ? _audioTracks.first.id : null)
+            : activeId);
 
-    // Visual on/off-Pärchen wie auf iOS: Musiknote wenn eine echte
-    // Audiospur aktiv ist, durchgestrichene Note wenn nicht. Spiegelt
-    // genau das Pattern der Untertitel-Buttons (subtitles_rounded /
-    // subtitles_off_rounded) und ersetzt das frühere chat_rounded.
-    final audioActive = effectiveActiveId != null;
+    final entries = <_MenuEntry>[
+      // "Aus" oben — standard Media-Player-Konvention, garantiert
+      // auch bei langer Spur-Liste erreichbar.
+      _MenuEntry(
+        label: 'Aus',
+        selected: isOff,
+        onTap: () async {
+          await _player.setAudioTrack(AudioTrack.no());
+          _startHideTimer();
+        },
+      ),
+      for (final track in _audioTracks)
+        _MenuEntry(
+          label: track.title ?? track.language ?? 'Spur ${track.id}',
+          selected:
+              effectiveActiveId != null && effectiveActiveId == track.id,
+          onTap: () {
+            _player.setAudioTrack(track);
+            _startHideTimer();
+          },
+        ),
+    ];
+
     return _IconMenuButton(
-      icon: audioActive
+      icon: activeIsReal
           ? Icons.music_note_rounded
           : Icons.music_off_rounded,
       iconColor:
-          audioActive ? AppTheme.textSecondary : AppTheme.textMuted,
+          activeIsReal ? AppTheme.textSecondary : AppTheme.textMuted,
       tooltip: 'Audiospuren',
       entries: entries,
     );
