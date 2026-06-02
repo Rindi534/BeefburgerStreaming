@@ -7,7 +7,7 @@
 ; ffmpeg.exe if you put one in windows/bin/).
 
 #define MyAppName "BeefburgerStreaming"
-#define MyAppVersion "1.9.43"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "Jakob"
 #define MyAppExeName "BeefburgerStreaming.exe"
 #define MyBuildDir "..\build\windows\x64\runner\Release"
@@ -43,7 +43,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Bundle the user-facing docs next to the exe so they're reachable via
 ; the Start-menu "Anleitung" shortcut and by browsing the install dir.
-Source: "..\ANLEITUNG.txt"; DestDir: "{app}"; Flags: ignoreversion
+; ANLEITUNG-WINDOWS.txt wird ohne Suffix als ANLEITUNG.txt installiert
+; damit der Start-Menue-Shortcut + die "Anleitung"-Verknuepfung in der App
+; einen einheitlichen Dateinamen finden.
+Source: "..\ANLEITUNG-WINDOWS.txt"; DestDir: "{app}"; DestName: "ANLEITUNG.txt"; Flags: ignoreversion
 Source: "..\ORDNERSTRUKTUR.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

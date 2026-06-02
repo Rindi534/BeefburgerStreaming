@@ -1,0 +1,207 @@
+==============================================================================
+              BeefburgerStreaming v2.0 - Windows-Anleitung
+==============================================================================
+
+Lokales Streaming fuer deine eigenen Filme und Serien. Kein Internet,
+kein Account, keine Cloud. Alles bleibt auf deinem PC.
+
+Aufbau des Medien-Ordners siehe ORDNERSTRUKTUR.txt.
+
+
+INHALT
+==============================================================================
+   1. Erster Start
+   2. Startseite & Detail-Ansicht
+   3. Der Player
+   4. Untertitel & Audio-Spuren
+   5. Naechste Folge / Auto-Play
+   6. Vollbild
+   7. Vorschaubilder in der Seekleiste
+   8. Erweiterte Werkzeuge (Screenshot & Clip)
+   9. Vorschau-Cache verwalten
+  10. Einstellungen
+  11. Tastenkuerzel
+  12. Tipps
+
+
+1. ERSTER START
+==============================================================================
+
+  1) Medien-Ordner so aufbauen wie in ORDNERSTRUKTUR.txt beschrieben.
+  2) BeefburgerStreaming starten.
+  3) Zahnrad oben rechts > "Medien-Ordner" > den Ordner waehlen.
+  4) Die App scannt automatisch. Fertig.
+
+
+2. STARTSEITE & DETAIL-ANSICHT
+==============================================================================
+
+STARTSEITE
+  - Oben: "Weiterschauen"-Leiste mit angefangenen Filmen/Episoden.
+    Maus-Drag, Mausrad oder Pfeil-Buttons zum Scrollen.
+  - Unten: Raster aller Medien. Klick oeffnet die Detail-Ansicht.
+
+DETAIL-ANSICHT
+  - Film: ein "Abspielen"-Button. Bei Fortschritt teilt er sich in
+    "Weiterschauen" + "Neu starten".
+  - Serie: Staffel-Auswahl + Episoden-Liste. Aktuell laufende
+    Episode ist hervorgehoben.
+
+
+3. DER PLAYER
+==============================================================================
+
+Klick aufs Video pausiert/spielt. Die Steuerleiste blendet sich nach
+ein paar Sekunden Inaktivitaet aus, kommt beim Maus-Wackeln zurueck.
+
+OBEN LINKS:  Zurueck-Pfeil, Serien-/Folgenname.
+OBEN RECHTS: Lock-Icon (sperrt den Player, dazu mehr unten).
+MITTE:       -10s | Play/Pause | +10s.
+UNTEN LINKS: Aktuelle Zeit / Gesamtdauer.
+UNTEN MITTE: Progressbar (klick- und zieh-bar).
+UNTEN RECHTS: Untertitel | Audio | Lautstaerke | Naechste Folge |
+              Vollbild.
+
+
+4. UNTERTITEL & AUDIO-SPUREN
+==============================================================================
+
+UNTERTITEL
+  Untertitel-Icon unten rechts oeffnet die Spur-Auswahl. Aus, oder
+  eine der eingebauten Spuren. Externe .srt-Dateien neben dem Video
+  werden automatisch erkannt.
+  Toggle per Taste C oder S.
+
+AUDIO-SPUREN
+  Note-Icon oeffnet die Spur-Auswahl - Aus oder eine der Spuren.
+  Toggle per Taste A.
+
+  Hinweis: Die App pausiert und springt nicht weiter. Bleibt das Video
+  ohne Ton, ist die "Aus"-Spur gewaehlt.
+
+
+5. NAECHSTE FOLGE / AUTO-PLAY
+==============================================================================
+
+Gegen Ende einer Episode erscheint rechts unten ein Countdown-Button
+"Naechste Folge". Klick oder Enter startet sofort, abwarten startet
+automatisch nach ein paar Sekunden.
+
+Zum Bleiben (Abspann ansehen): Backspace druecken oder irgendwo
+ausserhalb des Buttons klicken - dann wird nicht automatisch
+weitergesprungen.
+
+
+6. VOLLBILD
+==============================================================================
+
+Vollbild per F oder F11. Nochmal zum Beenden.
+
+Vollbild ist borderless (kein Fensterrahmen, deckt den ganzen Monitor
+ab). Auf Multi-Monitor-Setups wird der Bildschirm benutzt, auf dem
+das Fenster gerade liegt.
+
+Fenster vor das Vollbild zu schieben funktioniert: neue Programmfenster
+poppen auf, und Klick aufs Taskleisten-Icon eines bestehenden Programms
+holt es nach vorn. Klicks auf andere Monitore lassen den Vollbild-Modus
+unangetastet.
+
+
+7. VORSCHAUBILDER IN DER SEEKLEISTE
+==============================================================================
+
+Mit der Maus ueber die Progressbar fahren zeigt eine Vorschau des
+Bildes an der Stelle - hilfreich zum schnellen Springen.
+
+Vorschaubilder werden bei der ersten Wiedergabe im Hintergrund erzeugt
+und im Cache gespeichert. Vorschaubilder lassen sich in den
+Einstellungen deaktivieren.
+
+
+8. ERWEITERTE WERKZEUGE (SCREENSHOT & CLIP)
+==============================================================================
+
+In den Einstellungen "Erweiterte Werkzeuge" anschalten. Im Player
+erscheinen dann zwei Buttons in der Mitte unten:
+
+  KAMERA-SYMBOL    Screenshot der aktuellen Szene als .png.
+  VIDEO-SYMBOL     Clip-Aufnahme:
+                     1. Klick = Anfangspunkt setzen
+                     2. Klick = Endpunkt + Dateiname + Speichern
+                     Der Clip wird ohne Re-Encoding (verlustfrei)
+                     gespeichert.
+
+Zielordner: in den Einstellungen unter "Export-Ordner".
+
+
+9. VORSCHAU-CACHE VERWALTEN
+==============================================================================
+
+Vorschaubilder belegen Platz. Einstellungen > "Cache-Verwaltung":
+
+  - Pro Medium den Cache einzeln loeschen oder ein
+    "Behaltung"-Flag setzen (geschuetzt = nicht automatisch geloescht).
+  - "Gesamten Cache leeren": alle Vorschaubilder wegwerfen.
+
+  Automatisch wird sehr alter, nie wieder verwendeter Cache
+  zurueckgeschnitten - geschuetzte bleiben unangetastet.
+
+
+10. EINSTELLUNGEN
+==============================================================================
+
+Zahnrad oben rechts. Hier:
+
+  MEDIEN-ORDNER       Wechseln/neu setzen.
+  EXPORT-ORDNER       Wohin Screenshots/Clips gespeichert werden.
+  VORSCHAUBILDER      An/aus + Cache-Verwaltung.
+  ERWEITERTE WERKZEUGE  Screenshot + Clip ein/aus.
+  SLEEP-MODUS         Wenn an: aktueller Player-Fortschritt wird
+                      NICHT gespeichert. Sichtbar im Player am
+                      Mond-Icon. Praktisch zum "Probe-Schauen".
+  BIBLIOTHEK NEU SCANNEN  Wenn neue Medien hinzugefuegt wurden.
+  VERSION             Aktuell installierte Version.
+
+
+11. TASTENKUERZEL
+==============================================================================
+
+  Space / Maus-Klick aufs Video    Play / Pause
+  Pfeil links / rechts             -10s / +10s
+  Pfeil hoch / runter              Lautstaerke +/- 5%
+  M                                Stumm an/aus
+  C oder S                         Untertitel an/aus
+  A                                Audio an/aus
+  F oder F11                       Vollbild an/aus
+  L                                Lock-Modus aktivieren
+  Enter (im Naechste-Folge-Overlay) Sofort weiter
+  Backspace (im Naechste-Folge-Overlay) Abspann ansehen
+  Esc                              Player schliessen
+
+
+12. TIPPS
+==============================================================================
+
+  - Lock-Modus: L druecken oder oben rechts aufs Schloss klicken.
+    Im Lock-Modus sind alle Klicks und Tasten gesperrt - perfekt
+    fuer Kinder oder Katze auf der Tastatur. Aufschliessen: das
+    grosse Schloss 5 Sekunden lang gedrueckt halten, ein roter
+    Ring zeigt den Fortschritt.
+
+  - Mehrere Audio- oder Untertitel-Spuren werden direkt aus dem
+    Video-Container (MKV, MP4, etc.) gelesen - kein Vorab-Encoding
+    noetig.
+
+  - Cover-Erkennung: Eine Datei "poster.jpg" oder "cover.png" im
+    Medien-Ordner wird automatisch als Cover verwendet. Banner
+    analog mit "banner.jpg".
+
+  - Bei Problemen ist meist ein Bibliotheks-Neuscan ueber die
+    Einstellungen die schnellste Loesung.
+
+
+==============================================================================
+                     BeefburgerStreaming v2.0
+                  Lokales Streaming auf Windows
+                 (Ordneraufbau: siehe ORDNERSTRUKTUR.txt)
+==============================================================================

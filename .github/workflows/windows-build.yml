@@ -1,0 +1,100 @@
+# Baut den Windows-Installer (.exe) auf GitHubs gehosteten Windows-
+# Runnern.
+#
+# Triggers:
+#   - Jeder Push auf master:           Artifact upload (14 Tage Aufbewahrung)
+#   - Jeder Push eines Tags "v*.*.*":  Zusaetzlich an GitHub-Release anhaengen
+#   - Manueller "Run workflow":        Artifact upload
+#
+# Ergebnis: artifact "BeefburgerStreamingSetup-{version}-exe" -> herunterladen
+# und ausfuehren. Standard-Inno-Setup-Installer mit Start-Menue-Eintrag,
+# Desktop-Shortcut-Option, etc.
+#
+# Inno Setup ist auf den GitHub windows-latest Runnern vorinstalliert
+# (Choco-Package "innosetup"), wir nutzen direkt ISCC.exe.
+
+name: Windows build (installer EXE)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    tags: ['v*.*.*']
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write   # noetig fuer Release-Upload bei Tag-Triggern
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.7'
+          cache: true
+
+      - name: Flutter version info
+        run: flutter --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      # Inno Setup 6 ist standardmaessig auf windows-latest installiert,
+      # erreichbar als ISCC.exe im PATH oder unter "C:\Program Files (x86)
+      # \Inno Setup 6\ISCC.exe". Falls die Path-Variante mal nicht klappt,
+      # die vollqualifizierte Variante als Backup.
+      - name: Compile installer with Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = (Get-ChildItem `
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe", `
+            "C:\Program Files\Inno Setup 6\ISCC.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if (-not $iscc) {
+            Write-Error "ISCC.exe nicht gefunden"
+            exit 1
+          }
+          & $iscc installer\beefburger_streaming.iss
+
+      - name: Locate installer EXE
+        shell: pwsh
+        id: locate
+        run: |
+          $exe = Get-ChildItem installer\Output\BeefburgerStreamingSetup-*.exe |
+                 Sort-Object LastWriteTime -Descending |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Installer-EXE nicht gefunden"
+            exit 1
+          }
+          "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          "exe_name=$($exe.Name)" >> $env:GITHUB_OUTPUT
+          Write-Host "Gefunden: $($exe.FullName)"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.locate.outputs.exe_name }}
+          path: ${{ steps.locate.outputs.exe_path }}
+          retention-days: 14
+
+      # ----------------------------------------------------------------
+      # Release-Upload nur bei Tag-Push (z.B. "v2.0.0"). Siehe ios-build.yml
+      # fuer die Mechanik - softprops/action-gh-release erstellt das
+      # Release falls noch nicht vorhanden und haengt die EXE an.
+      # ----------------------------------------------------------------
+      - name: Attach installer to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.locate.outputs.exe_path }}
+          generate_release_notes: true

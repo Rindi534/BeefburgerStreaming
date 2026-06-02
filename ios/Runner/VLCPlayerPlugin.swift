@@ -166,6 +166,11 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // Sekunden Pause → beim Resume muss der AudioUnit erst wieder
         // hochfahren, was den hörbaren Audio-Lag ~400-600ms produziert
         // hat. Mit aktiver Session bleibt der AudioUnit primed.
+        //
+        // AVAudioSession auf "playback" / "moviePlayback" konfigurieren
+        // damit Audio im Hintergrund + im Sperrbildschirm spielt und
+        // beim Stummschalter trotzdem läuft. Standard-Pattern für
+        // Video-Player auf iOS.
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .moviePlayback,
@@ -173,8 +178,7 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
             try session.setActive(true, options: [])
         } catch {
             // Nicht fatal — VLCKit fällt ohne unseren Setup auf den
-            // default Session-Mode zurück. Der Audio-Lag ist dann
-            // wieder da, aber Playback funktioniert.
+            // default Session-Mode zurück, Playback funktioniert.
         }
 
         // mediaPlayer.drawable wird gesetzt — Test ob libvlc PARALLEL
@@ -300,8 +304,9 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
         // (Software-Decoder), der gibt I420 aus, libvlc HAT
         // YUVA→I420-Blender → SPU wird ins Frame eingebrannt.
         //
-        // Trade-off: HEVC Software-Decoding ist langsamer als Hardware
-        // (auf A12+ aber problemlos). Wert es für Subs.
+        // v1.9.38 hat probiert das wegzulassen (Audio-Lag-Hypothese)
+        // — Audio-Lag blieb aber, embedded Subs gingen verloren.
+        // Falsche Spur, wieder zurückgenommen in v1.9.39.
         media.addOption(":codec=avcodec")
         // Subtitle-Größe — sub-text-scale=60 + rel-fontsize=40
         // hatten beide keinen Effekt im User-Test. MobileVLCKits
@@ -350,23 +355,6 @@ class VLCPlayerView: NSObject, FlutterPlatformView {
                                   result: @escaping FlutterResult) {
         switch call.method {
         case "play":
-            // AVAudioSession explizit reaktivieren BEVOR play()
-            // läuft. iOS deaktiviert die Session typischerweise
-            // nach ein paar Sekunden Pause — beim Resume muss der
-            // AudioUnit sonst neu hochgefahren werden, was den
-            // 1-1.5s Audio-Lag produziert den der User in v1.9.4
-            // gemeldet hat. Mit dem expliziten setActive bleibt
-            // die Session warm.
-            do {
-                let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.playback,
-                                        mode: .moviePlayback,
-                                        options: [])
-                try session.setActive(true, options: [])
-            } catch {
-                // Nicht fatal — VLC fällt auf Default zurück, Lag
-                // ist dann wieder da, aber Playback funktioniert.
-            }
             mediaPlayer.play()
             result(nil)
         case "pause":

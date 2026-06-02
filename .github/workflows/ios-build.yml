@@ -1,25 +1,27 @@
-# Baut ein unsigned .ipa fuer das iPad/iPhone auf GitHubs gehosteten
-# macOS-Runnern. Wird manuell via "Run workflow" im Actions-Tab
-# angestossen oder automatisch bei jedem Push auf ios-support.
+# Baut ein unsigned .ipa fuer iPhone/iPad auf GitHubs gehosteten
+# macOS-Runnern.
+#
+# Triggers:
+#   - Jeder Push auf master:           Artifact upload (14 Tage Aufbewahrung)
+#   - Jeder Push eines Tags "v*.*.*":  Zusaetzlich an GitHub-Release anhaengen
+#   - Manueller "Run workflow":        Artifact upload
 #
 # Ergebnis: artifact "BeefburgerStreaming-unsigned-ipa" -> herunterladen,
 # dann mit Sideloadly auf Windows mit freier Apple-ID signieren und aufs
-# iPad spielen.
+# iPad/iPhone spielen.
 #
 # Warum "unsigned"? Signing braucht einen bezahlten Apple Developer Account
 # (99 USD/Jahr) oder die Apple-ID-Keys vom lokalen Mac. Wir haben weder das
 # eine noch das andere, also bauen wir die App roh und lassen Sideloadly
-# das Signing mit der freien Apple-ID lokal auf Windows erledigen.
+# das Signing mit der freien Apple-ID lokal erledigen.
 
 name: iOS build (unsigned IPA)
 
 on:
-  # Manueller Trigger: Actions-Tab -> "iOS build" -> "Run workflow"
   workflow_dispatch:
-  # Automatisch bei jedem Push auf ios-support, damit du eine frische
-  # .ipa hast ohne den Trigger manuell klicken zu muessen.
   push:
-    branches: [ios-support]
+    branches: [master]
+    tags: ['v*.*.*']
 
 jobs:
   build-ios:
@@ -29,6 +31,9 @@ jobs:
     # Mac-Minuten. Ein Build dauert ~8-12 min.
     runs-on: macos-14
 
+    permissions:
+      contents: write   # noetig fuer Release-Upload bei Tag-Triggern
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -36,16 +41,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          # Channel "stable" + fester Major sorgt dafuer, dass wir nicht
-          # ueber Nacht auf eine breaking Flutter-Version hochspringen.
           channel: stable
-          # Muss eine Flutter-Version sein, die Dart >= 3.11.4 mitbringt
-          # (siehe pubspec.yaml `environment.sdk: ^3.11.4`). Flutter 3.24
-          # bringt nur Dart 3.5 mit -> version solving schlaegt fehl.
-          # 3.41.7 ist die Version, die Flutter explizit als passend
-          # meldet, wenn man einen zu alten Channel hat.
           flutter-version: '3.41.7'
-          # Cache der pub + Flutter SDK Downloads beschleunigt zweite Builds.
           cache: true
 
       - name: Flutter version info
@@ -55,27 +52,18 @@ jobs:
         run: flutter pub get
 
       - name: CocoaPods install
-        # Flutter-Plugins registrieren sich via Pods; muss VOR dem iOS-
-        # Build laufen, sonst fehlen die nativen Abhaengigkeiten
-        # (media_kit_libs_ios_video, url_launcher, path_provider, ...).
         working-directory: ios
         run: pod install --repo-update
 
       - name: Build unsigned iOS app
-        # --no-codesign ueberspringt den Signing-Schritt komplett.
-        # Ergebnis landet in build/ios/iphoneos/Runner.app.
         run: flutter build ios --release --no-codesign
 
       - name: Package Runner.app into IPA
-        # Eine .ipa ist nichts anderes als ein zip-Archiv mit einem
-        # "Payload/"-Ordner drin, der die .app enthaelt. Sideloadly
-        # erwartet genau dieses Layout.
         run: |
           set -e
           cd build/ios/iphoneos
           mkdir -p Payload
           cp -R Runner.app Payload/Runner.app
-          # -y ueberschreibt, falls das Artefakt aus einem Vorlauf existiert.
           zip -r -y ../../../BeefburgerStreaming-unsigned.ipa Payload
           cd -
           ls -lh BeefburgerStreaming-unsigned.ipa
@@ -85,6 +73,20 @@ jobs:
         with:
           name: BeefburgerStreaming-unsigned-ipa
           path: BeefburgerStreaming-unsigned.ipa
-          # 14 Tage Aufbewahrung reicht dick — nach einer Woche muss die App
-          # eh neu signiert werden, dann laeuft sowieso ein neuer Build.
           retention-days: 14
+
+      # ----------------------------------------------------------------
+      # Release-Upload nur bei Tag-Push (z.B. "v2.0.0").
+      # softprops/action-gh-release erstellt das Release falls noch
+      # nicht vorhanden und haengt die .ipa an. iOS- und Windows-Jobs
+      # haengen unabhaengig voneinander an, das Release wird einmalig
+      # erstellt und beide Anhaenge tauchen daran auf.
+      # ----------------------------------------------------------------
+      - name: Attach IPA to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BeefburgerStreaming-unsigned.ipa
+          # generate_release_notes erstellt automatisch die Liste der
+          # Commits seit dem letzten Release als Release-Beschreibung.
+          generate_release_notes: true

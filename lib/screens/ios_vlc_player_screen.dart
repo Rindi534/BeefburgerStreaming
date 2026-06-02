@@ -16,6 +16,7 @@
 // wäre dieser Refactor vorzeitig.
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -66,6 +67,9 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   IOSVLCPlayerController? _controller;
   Timer? _progressTimer;
   Timer? _controlsHideTimer;
+  // FocusNode für den iPad-Keyboard-Shortcut-Handler. Lebt so lange
+  // wie der Player-Screen aktiv ist; dispose() im State-Teardown.
+  final FocusNode _keyboardFocus = FocusNode(debugLabel: 'iOSVLCPlayer');
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<String>? _errorSub;
   StreamSubscription<bool>? _playingSub;
@@ -113,6 +117,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   // Standard).
   bool _controlsVisible = true;
   bool _isPlaying = false;
+  // Lock-State: wenn true ignorieren wir alle Tastaturkürzel und
+  // den Background-Tap-Catcher / Controls-Overlay-Tap; nur der
+  // dedizierte Lock-Button (oben rechts in der Toolbar) reagiert
+  // noch — und auch der nur auf einen 5-Sekunden-Hold zum
+  // Aufschließen. Locken selber geht per kurzem Tap oder Taste 'L'.
+  bool _isLocked = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
 
@@ -210,6 +220,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     _saveProgress();
     _progressTimer?.cancel();
     _controlsHideTimer?.cancel();
+    _keyboardFocus.dispose();
     _completedSub?.cancel();
     _errorSub?.cancel();
     _playingSub?.cancel();
@@ -262,10 +273,42 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   /// Controls-Sichtbarkeit, damit der User nicht das Gefühl hat der Tap
   /// sei ins Leere gegangen.
   void _handleBackgroundTap() {
+    // Im Lock-Modus tut der Background-Tap nichts — der ganze
+    // Bildschirm ist inert bis auf den Lock-Button.
+    if (_isLocked) return;
     if (_showNextEpisode && !_watchingCredits) {
       setState(() => _watchingCredits = true);
     }
     _toggleControls();
+  }
+
+  /// Locken: Controls + Tap-Catcher werden via IgnorePointer
+  /// deaktiviert, der Lock-Button (rechts oben in der Toolbar)
+  /// bleibt das einzige reagierende Element. Auto-Hide bleibt
+  /// dabei nicht weiterlaufen — wir halten die Controls beim
+  /// Locken zwar nicht sichtbar (der Player soll sauber sein),
+  /// der Lock-Button lebt aber außerhalb des Controls-Layers
+  /// und bleibt immer sichtbar im gelockten Zustand.
+  void _lock() {
+    if (_isLocked) return;
+    setState(() {
+      _isLocked = true;
+      _controlsVisible = false;
+    });
+    _controlsHideTimer?.cancel();
+  }
+
+  /// Aufschließen — wird ausschließlich vom Lock-Button getriggert
+  /// nachdem der User 5 Sekunden gehalten hat. Controls erscheinen
+  /// kurz damit der User Feedback bekommt, dann gewöhnliches
+  /// Auto-Hide.
+  void _unlock() {
+    if (!_isLocked) return;
+    setState(() {
+      _isLocked = false;
+      _controlsVisible = true;
+    });
+    _scheduleControlsHide();
   }
 
   void _onReady(IOSVLCPlayerController ctrl) {
@@ -410,6 +453,139 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       await ctrl.stopPiP();
     } else {
       await ctrl.startPiP();
+    }
+  }
+
+  // ─── iPad-External-Keyboard-Shortcuts ─────────────────────────
+  //
+  // Wenn ein iPad mit angeschlossener Tastatur die App benutzt,
+  // bekommt Flutter ganz normale KeyEvents — wir können also die
+  // gleichen Shortcuts wie auf Windows anbieten. Mapping bewusst
+  // identisch zu Windows damit Power-User keine zwei Schemas im
+  // Kopf haben müssen, plus zwei iOS-spezifische Wünsche (P → PiP,
+  // Backspace → Close).
+  //
+  // Auf dem iPhone passiert nichts davon (keine Hardware-Tastatur,
+  // keine KeyEvents → kein-op).
+  //
+  // Spammen ist EXPLIZIT erlaubt — KeyRepeat-Events werden nicht
+  // mehr gefiltert. Wer Space schnell hintereinander drückt,
+  // bekommt jeden Toggle ausgeführt. Backspace ist auch unfiltert,
+  // weil dispose() den letzten Save trägt — kein Race möglich.
+  void _onKeyEvent(KeyEvent event) {
+    if (event is KeyUpEvent) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
+
+    // Im Lock-Modus reagieren wir auf NICHTS via Tastatur — das
+    // ist die ganze Point of Lock. Auch 'L' nicht: Aufschließen
+    // geht ausschließlich per 5-Sekunden-Hold auf den Lock-Button.
+    if (_isLocked) return;
+
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.space:
+        if (_isPlaying) {
+          ctrl.pause();
+        } else {
+          ctrl.play();
+        }
+        _showControlsAndScheduleHide();
+        break;
+
+      case LogicalKeyboardKey.arrowLeft:
+        _skipBy(const Duration(seconds: -10));
+        _showControlsAndScheduleHide();
+        break;
+
+      case LogicalKeyboardKey.arrowRight:
+        _skipBy(const Duration(seconds: 10));
+        _showControlsAndScheduleHide();
+        break;
+
+      case LogicalKeyboardKey.keyP:
+        if (_pipAvailable) _togglePiP();
+        break;
+
+      case LogicalKeyboardKey.keyC:
+      case LogicalKeyboardKey.keyS:
+        _toggleSubtitlesFromKeyboard();
+        break;
+
+      case LogicalKeyboardKey.keyA:
+        _toggleAudioFromKeyboard();
+        break;
+
+      case LogicalKeyboardKey.keyL:
+        // 'L' = Locken. Aufschließen geht nicht via Tastatur, nur
+        // durch 5-Sekunden-Hold am Lock-Button.
+        _lock();
+        break;
+
+      case LogicalKeyboardKey.backspace:
+        _handleClose();
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  void _showControlsAndScheduleHide() {
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+    }
+    _scheduleControlsHide();
+  }
+
+  /// C/S-Shortcut: simpler Untertitel-Toggle zwischen
+  /// "aus" und der ersten verfügbaren echten Spur.
+  ///
+  /// hasActive prüft NUR echte Spuren — die libvlc-eigene
+  /// "Aus"-Spur (siehe _isOffTrack) wird ausgefiltert, sonst kommt
+  /// der Toggle nach dem ersten Ausschalten nicht mehr zurück
+  /// (Bug v1.9.22).
+  Future<void> _toggleSubtitlesFromKeyboard() async {
+    // Erste echte (nicht "Aus") Spur finden.
+    final realTracks = _subtitleTracks.where((t) => !_isOffTrack(t)).toList();
+    if (realTracks.isEmpty && _externalSubs.isEmpty) return;
+
+    final hasActive = _subtitlesVisuallyActive;
+    if (hasActive) {
+      if (_externalSubsEnabled) {
+        setState(() => _externalSubsEnabled = false);
+      }
+      await _setSubtitleTrack(-1);
+    } else {
+      if (_externalSubs.isNotEmpty &&
+          (realTracks.isEmpty || _externalSubsEnabled)) {
+        // Externe SRT bevorzugen wenn sie zuletzt aktiv war oder
+        // sonst keine libvlc-Spur da ist.
+        setState(() => _externalSubsEnabled = true);
+      } else {
+        await _setSubtitleTrack(realTracks.first.id);
+      }
+    }
+  }
+
+  /// A-Shortcut: Toggle zwischen "Aus" und der ersten echten Audio-
+  /// Spur — analog zum C-Toggle bei Untertiteln. User-Wunsch:
+  /// bei nur einer Audio-Spur muss A trotzdem etwas tun (ein- und
+  /// ausschalten), reines Cyclen tat das nicht.
+  Future<void> _toggleAudioFromKeyboard() async {
+    final real = _audioTracks.where((t) => !_isOffTrack(t)).toList();
+    if (real.isEmpty) return;
+
+    if (_audioVisuallyActive) {
+      // Aus: id der libvlc-eigenen "Aus"-Spur verwenden, fallback -1
+      // wenn aus irgendwelchen Gründen keine "Aus"-Spur in der Liste
+      // ist (passiert nicht, defensiv).
+      final off = _audioTracks.firstWhere(
+        _isOffTrack,
+        orElse: () => const VlcTrack(id: -1, name: 'Aus', isCurrent: false),
+      );
+      await _setAudioTrack(off.id);
+    } else {
+      await _setAudioTrack(real.first.id);
     }
   }
 
@@ -587,7 +763,17 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     // UiKitView als dedicated tap-catcher. Der liegt unter dem
     // Controls-Overlay (damit sichtbare Buttons weiterhin funktionieren)
     // und fängt alles ab was sonst in VLC verschwinden würde.
-    return Scaffold(
+    //
+    // KeyboardListener wickelt alles damit auf iPads mit angeschlossener
+    // Tastatur Shortcuts funktionieren (Space, Pfeile, P, C/S, A,
+    // Backspace). FocusNode mit autofocus sorgt dafür dass die App
+    // ohne expliziten Tap die Keys empfängt sobald sie aufgeht.
+    // Auf iPhones ohne Tastatur ist's ein No-op.
+    return KeyboardListener(
+      focusNode: _keyboardFocus,
+      autofocus: true,
+      onKeyEvent: _onKeyEvent,
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
@@ -625,7 +811,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           // Controls geblockt werden trotzdem hier ankommen.
           Positioned.fill(
             child: IgnorePointer(
-              ignoring: _controlsVisible,
+              ignoring: _controlsVisible || _isLocked,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _handleBackgroundTap,
@@ -637,11 +823,15 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           // Close. Kein Volume (iOS Hardware-Tasten reichen), kein
           // Fullscreen-Toggle (sind ja schon vollflächig), kein
           // Speed-Picker (kommt später wenn nötig).
+          //
+          // Im Lock-Modus opacity 0 + IgnorePointer → komplett
+          // unsichtbar + inert. Der Lock-Shield-Overlay weiter
+          // unten übernimmt dann.
           AnimatedOpacity(
-            opacity: _controlsVisible ? 1.0 : 0.0,
+            opacity: (_controlsVisible && !_isLocked) ? 1.0 : 0.0,
             duration: const Duration(milliseconds: 250),
             child: IgnorePointer(
-              ignoring: !_controlsVisible,
+              ignoring: !_controlsVisible || _isLocked,
               // GestureDetector um das Overlay selbst: Tap auf den
               // halbtransparenten Bereich (nicht auf Buttons) blendet
               // die Controls wieder aus. Symmetrisch zum Verhalten von
@@ -654,14 +844,40 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             ),
           ),
 
+          // Lock-Shield: schluckt im gelockten Zustand alle Touch-
+          // Events auf dem Bildschirm und zeigt nur das geschlossene
+          // Schloss oben rechts + die read-only Scrubber-Info unten.
+          // Beide blenden sich nach 3s aus und kommen bei jedem
+          // beliebigen Touch zurück (wie die normalen Controls).
+          // Hold ≥5s auf das Schloss → _unlock(); kürzer halten →
+          // Ring zieht sich smooth zurück, nichts passiert.
+          //
+          // _LockedShield liegt UNTER dem Next-Episode-Overlay damit
+          // dessen Button auch im Lock-Modus klickbar bleibt — das
+          // ist das einzig erlaubte Interaktive im Lock-Modus.
+          if (_isLocked)
+            _LockedShield(
+              onUnlock: _unlock,
+              // Im Lock-Modus ohne Skip-Next-Icon — diese Aktion ist
+              // im Lock-State sowieso gesperrt; die verbleibende
+              // Komposition [pos] [slider] [dur] sitzt damit
+              // automatisch horizontal symmetrisch im Container.
+              scrubRow: _buildScrubRow(context,
+                  includeNextEpisodeIcon: false),
+            ),
+
           // Next-Episode-Overlay — außerhalb der AnimatedOpacity-Controls,
           // damit es auch dann sichtbar ist wenn die Haupt-Controls schon
-          // auto-hidden sind (Netflix-Pattern).
+          // auto-hidden sind (Netflix-Pattern). Im Stack OBERHALB des
+          // Lock-Shields damit der Button auch im Lock-Modus tappbar
+          // bleibt; wenn der Overlay nicht aktiv ist greift sein
+          // eigener IgnorePointer und Touches fallen zum Shield durch.
           _buildNextEpisodeOverlay(context),
 
           if (_playbackError != null)
             Positioned.fill(child: _buildErrorOverlay()),
         ],
+      ),
       ),
     );
   }
@@ -696,6 +912,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
               ),
             ),
             child: Row(
+              // crossAxis.start damit ALLE Children (X, Title-Column,
+              // rechte Icon-Gruppe) mit ihrer Oberkante an Row.top
+              // bündig sitzen. Vorher Default (center) → Title-Block
+              // (34 px hoch) wurde gegenüber den 40-px-Icons leicht
+              // verschoben weil die Row-Höhe vom max child kam.
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _buildEdgeIcon(
                   icon: Icons.close_rounded,
@@ -707,6 +929,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
+                    // mainAxisAlignment default (start) damit die
+                    // Title-Oberkante auf Row.top sitzt — gemeinsam
+                    // mit den Icon-Boxen die jetzt via Row.crossAxis.
+                    // start auch dort starten.
                     children: [
                       Text(
                         widget.title,
@@ -745,6 +971,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                     ],
                   ),
                 ),
+                // 8 px symmetrischer Abstand zwischen Title-Block und
+                // dem rechten Icon-Set — ohne diesen SizedBox sitzt der
+                // erste Icon (Sleep oder Subtitle) direkt an der
+                // ellipsierten Text-Kante. Spiegelbild zum SizedBox(8)
+                // links zwischen X und Title.
+                const SizedBox(width: 8),
                 // Sleep-Indicator. Wird NUR eingeblendet wenn der Modus
                 // gerade aktiv ist — sichtbares Zeichen für den User
                 // dass nichts in den Fortschritt schreibt, ohne ein
@@ -767,7 +999,14 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 // Windows). Immer sichtbar, nur disabled wenn gerade
                 // nicht verfügbar — so springt das Layout nicht.
                 _buildEdgeIcon(
-                  icon: Icons.subtitles_rounded,
+                  // Icon-Variante je nach Aus-Zustand: wenn nichts
+                  // sichtbar ist (weder libvlc-Track noch externes
+                  // SRT) → durchgestrichener Lautsprecher-äh
+                  // -Untertitel. Sonst normales subtitles_rounded.
+                  // Matched Windows-Verhalten.
+                  icon: _subtitlesVisuallyActive
+                      ? Icons.subtitles_rounded
+                      : Icons.subtitles_off_rounded,
                   tooltip: 'Untertitel',
                   // Auch enabled wenn nur externe SRT vorhanden ist
                   // (kein libvlc-Track aber Dart-side Overlay).
@@ -780,10 +1019,24 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                 ),
                 const SizedBox(width: 8),
                 _buildEdgeIcon(
-                  icon: Icons.chat_rounded,
+                  // multitrack_audio = vertikale Balken wie ein
+                  // Audio-Spur-Editor. Semantisch Treffer für
+                  // "Audiospur", rein rechteckig (kein Sprech-
+                  // blasen-Schwanz), aligned exakt wie Subtitle
+                  // und PiP.
+                  // Off-Variante hat Material nicht — gleicher
+                  // Icon-Body mit gedimmter Farbe + Custom-Slash-
+                  // Overlay via CustomPaint. Dadurch bleibt die
+                  // Visual-Family für on/off identisch.
+                  iconChild: _AudioTrackIcon(
+                    active: _audioVisuallyActive,
+                    enabled: _audioTracks.isNotEmpty,
+                  ),
                   tooltip: 'Audiospur',
-                  enabled: _audioTracks.length > 1,
-                  onPressed: _audioTracks.length > 1
+                  // ≥1 Spur reicht jetzt — Aus-Option im Menü macht
+                  // auch bei einer einzelnen Spur Sinn.
+                  enabled: _audioTracks.isNotEmpty,
+                  onPressed: _audioTracks.isNotEmpty
                       ? () => _openAudioMenu(context)
                       : null,
                 ),
@@ -796,6 +1049,17 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                       _pipActive ? 'PiP beenden' : 'Picture-in-Picture',
                   enabled: _pipAvailable,
                   onPressed: _pipAvailable ? _togglePiP : null,
+                ),
+                const SizedBox(width: 8),
+                // Lock-Button im unlocked-State: einfacher Tap, kein
+                // Hold nötig. Der lock-Modus rendert stattdessen das
+                // _LockedShield-Overlay weiter unten im Stack — dort
+                // läuft die 5-Sekunden-Hold-Animation. Hier nur das
+                // offene Schloss als Hinweis "klicken zum Sperren".
+                _buildEdgeIcon(
+                  icon: Icons.lock_open_rounded,
+                  tooltip: 'Sperren',
+                  onPressed: _lock,
                 ),
               ],
             ),
@@ -864,11 +1128,20 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
           right: 0,
           bottom: 0,
           child: Container(
+            // right: 28 (= Top-Container-right). Math: Lock-Glyph
+            // (26 px close-rounded zentriert in 40-Box) hat
+            // visible-right bei box.right − 7. Box.right bei
+            // screen.right − 28 → Glyph-Visible-Right bei
+            // screen.right − 35. NextEp-Glyph (36 px skip-next
+            // zentriert in 50-Box) hat ebenso visible-right bei
+            // box.right − 7. Mit container.right = 28 → identisches
+            // Box.right → identische Glyph-Visible-Right-Position.
+            // Mathematisch deckungsgleich mit Lock-Glyph oben.
             padding: const EdgeInsets.only(
               left: 28,
               right: 28,
               top: 28,
-              bottom: 18,
+              bottom: 12,
             ),
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -947,6 +1220,10 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
 
   Future<void> _openAudioMenu(BuildContext context) async {
     _scheduleControlsHide();
+    // KEIN extra "Aus"-Eintrag mehr — libvlc liefert seine "Disable"-
+    // Spur (in _cleanTrackName umbenannt zu "Aus") bereits IN
+    // _audioTracks. v1.9.22 hat fälschlich nochmal einen draufgepackt,
+    // Resultat war ein Duplikat mit demselben Selektions-State.
     await _showTrackMenu(
       context: context,
       title: 'Audiospur',
@@ -954,6 +1231,25 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       onSelect: (id) async => _setAudioTrack(id),
     );
   }
+
+  /// True wenn aktuell EINE ECHTE Untertitel-Spur sichtbar ist —
+  /// die libvlc-eigene "Aus"-Spur zählt nicht als aktiv, sonst
+  /// flippt der C-Toggle nicht zurück (Bug v1.9.22).
+  bool get _subtitlesVisuallyActive {
+    if (_externalSubsEnabled) return true;
+    return _subtitleTracks.any((t) => !_isOffTrack(t) && t.isCurrent);
+  }
+
+  /// Analog für Audio.
+  bool get _audioVisuallyActive =>
+      _audioTracks.any((t) => !_isOffTrack(t) && t.isCurrent);
+
+  /// libvlc liefert seine "Disable"-Spur in der Liste mit;
+  /// _cleanTrackName übersetzt den Namen zu "Aus". Wir erkennen
+  /// sie an genau diesem Namen — die ID ist je nach MobileVLCKit-
+  /// Version mal -1, mal 0, mal eine andere, deshalb namensbasiert
+  /// (deterministisch über _cleanTrackName).
+  bool _isOffTrack(VlcTrack t) => t.name == 'Aus';
 
   /// Zeigt das libvlc-interne Debug-Log in einem scrollbaren Dialog.
   /// Wird vom Sub-Menü via Diagnose-Eintrag aufgerufen damit wir bei
@@ -1141,7 +1437,11 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   }
 
   Widget _buildEdgeIcon({
-    required IconData icon,
+    IconData? icon,
+    /// Wird VOR `icon` genommen wenn gesetzt — für Buttons die
+    /// einen eigenen gestapelten Icon-Build brauchen (z.B. der
+    /// Audio-Track-Button mit Slash-Overlay im off-State).
+    Widget? iconChild,
     required String tooltip,
     required VoidCallback? onPressed,
     bool enabled = true,
@@ -1151,6 +1451,8 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
     // sollen.
     bool accent = false,
   }) {
+    assert(icon != null || iconChild != null,
+        'either icon or iconChild must be provided');
     final color = !enabled
         ? Colors.white.withValues(alpha: 0.35)
         : (accent ? AppTheme.accent : Colors.white);
@@ -1159,7 +1461,7 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
       height: 40,
       child: IconButton(
         padding: EdgeInsets.zero,
-        icon: Icon(icon, color: color, size: 26),
+        icon: iconChild ?? Icon(icon!, color: color, size: 26),
         tooltip: tooltip,
         onPressed: onPressed,
       ),
@@ -1297,7 +1599,13 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
   /// ValueListenableBuilder), nicht den gesamten Control-Overlay.
   /// Der große 56×56 Next-Episode-Icon sitzt rechts außen, deutlich
   /// größer als die Top-Bar-Buttons, wie User in 1.5.26 gewünscht.
-  Widget _buildScrubRow(BuildContext context) {
+  /// [includeNextEpisodeIcon] = false wird aus dem _LockedShield-
+  /// Pfad benutzt: dort ist die ganze Bar nur read-only Info, der
+  /// Skip-Next-Button wäre eh wirkungslos und sollte aussichtlich
+  /// ausgeblendet sein damit die Zeit-/Slider-Komposition optisch
+  /// zentriert sitzt.
+  Widget _buildScrubRow(BuildContext context,
+      {bool includeNextEpisodeIcon = true}) {
     return ValueListenableBuilder<Duration>(
       valueListenable: _durationNotifier,
       builder: (ctx, duration, _) {
@@ -1308,7 +1616,15 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
             final value = dMs <= 0
                 ? 0.0
                 : (position.inMilliseconds / dMs).clamp(0.0, 1.0);
-            return Row(
+            // Padding(left: 7) → Time-Text-Linksrand fällt auf
+            // X-Glyph-Linksrand. Math: X ist 26-px close_rounded
+            // zentriert in 40-Box, Box.left bei container-left 28,
+            // Glyph.left bei box.left + 7 (= (40-26)/2). Padding 7
+            // schiebt den Time-Text auf 28+7 = 35 → exakt unter
+            // dem leftmost-pixel des X-Cross.
+            return Padding(
+              padding: const EdgeInsets.only(left: 7),
+              child: Row(
               children: [
                 Text(
                   _formatDuration(position),
@@ -1392,11 +1708,12 @@ class _IOSVLCPlayerScreenState extends ConsumerState<IOSVLCPlayerScreen> {
                     fontFeatures: [FontFeature.tabularFigures()],
                   ),
                 ),
-                if (_lookupNextEpisode() != null) ...[
+                if (includeNextEpisodeIcon && _lookupNextEpisode() != null) ...[
                   const SizedBox(width: 4),
                   _buildNextEpisodeIcon(),
                 ],
               ],
+              ),
             );
           },
         );
@@ -1659,4 +1976,274 @@ class _TrackMenuSheetState extends State<_TrackMenuSheet> {
       ),
     );
   }
+}
+
+/// Toolbar-Audio-Icon: klassische Note (aktiv) bzw. durchgestrichene
+/// Note (aus). Material hat beide eingebauten Glyphs in derselben
+/// Familie — keine externe Icon-Lib nötig, kein selbst gemalter
+/// Slash. User-Wunsch: das Note-Paar matcht auch die Windows-Version
+/// der App.
+class _AudioTrackIcon extends StatelessWidget {
+  final bool active;
+  final bool enabled;
+  final double size;
+
+  const _AudioTrackIcon({
+    required this.active,
+    required this.enabled,
+    this.size = 26,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled
+        ? Colors.white
+        : Colors.white.withValues(alpha: 0.35);
+    return Icon(
+      active ? Icons.music_note_rounded : Icons.music_off_rounded,
+      color: color,
+      size: size,
+    );
+  }
+}
+
+/// Full-screen-Overlay im Lock-Modus.
+///
+/// Übernimmt vier Aufgaben:
+///  1. Schluckt ALLE Touch-Events außerhalb des Lock-Buttons via
+///     einen full-screen Listener (HitTestBehavior.opaque) — sonst
+///     würde VLC's UIView (das ganz unten im Stack sitzt) die Taps
+///     mitkriegen und reagieren. Der gleiche Listener nutzt jeden
+///     Touch um Lock-Icon + Scrubber-Bar für 3s einzublenden.
+///  2. Rendert das geschlossene Schloss-Icon oben rechts. 96x96
+///     Box mit 56px Icon — bewusst größer als die 40x40 Toolbar-
+///     Variante damit der Fortschrittsring außerhalb der Daumen-
+///     Auflage sichtbar bleibt (User-Wunsch).
+///  3. Zeigt am unteren Rand denselben Scrubber + Zeitangaben wie
+///     im unlocked Controls-Overlay, aber via IgnorePointer auf
+///     read-only gestellt. Visuelle Position-Anzeige + verbleibende
+///     Zeit, ohne dass damit interagiert werden kann.
+///  4. Beide Info-Elemente blenden sich nach 3s aus und kommen bei
+///     jedem beliebigen Touch zurück (Netflix-Style Auto-Hide).
+class _LockedShield extends StatefulWidget {
+  final VoidCallback onUnlock;
+  final Widget scrubRow;
+  const _LockedShield({
+    required this.onUnlock,
+    required this.scrubRow,
+  });
+
+  @override
+  State<_LockedShield> createState() => _LockedShieldState();
+}
+
+class _LockedShieldState extends State<_LockedShield>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ring;
+  bool _visible = true;
+  Timer? _hideTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _ring = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 5),
+      // Beim Loslassen zieht sich der Ring schnell zurück — gibt
+      // sauberes "abgebrochen"-Feedback ohne hartem Sprung auf 0.
+      reverseDuration: const Duration(milliseconds: 250),
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          // 5s erreicht → unlock; Parent rebuildet ohne
+          // _LockedShield, der Controller wird dabei disposed.
+          widget.onUnlock();
+        }
+      });
+    // Initial sichtbar, dann nach 3s ausblenden.
+    _scheduleHide();
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    _ring.dispose();
+    super.dispose();
+  }
+
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      setState(() => _visible = false);
+    });
+  }
+
+  /// Touch irgendwo auf dem Bildschirm außerhalb des Lock-Buttons.
+  /// Macht Lock-Icon + Scrubber wieder sichtbar (oder hält sie
+  /// sichtbar) und startet den Auto-Hide neu.
+  void _reveal() {
+    if (!_visible) setState(() => _visible = true);
+    _scheduleHide();
+  }
+
+  /// Finger landet auf dem Lock-Button. Während des Holds bleibt
+  /// die Info sichtbar (Hide-Timer aus), Ring beginnt zu füllen.
+  void _onDown(PointerDownEvent _) {
+    _hideTimer?.cancel();
+    if (!_visible) setState(() => _visible = true);
+    _ring.forward();
+  }
+
+  /// Finger gelöst (oder Cancel). Wenn Ring noch am vorwärts war,
+  /// reverse — und Auto-Hide neu starten damit das Schloss bald
+  /// wieder verschwindet.
+  void _onUp(PointerEvent _) {
+    if (!mounted) return;
+    if (_ring.status == AnimationStatus.forward) {
+      _ring.reverse();
+    }
+    _scheduleHide();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final topInset = MediaQuery.of(context).padding.top;
+    return Stack(
+      children: [
+        // 1) Full-screen Touch-Catcher. Sitzt UNTER allem anderen,
+        //    fängt alles was nicht auf dem Lock-Button landet, und
+        //    nutzt JEDEN solchen Touch zum Re-Reveal der Info-
+        //    Elemente. behavior:opaque sorgt zusätzlich dafür dass
+        //    die Touches NICHT zur VLC-Layer durchschlagen.
+        Positioned.fill(
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (_) => _reveal(),
+            child: const SizedBox.expand(),
+          ),
+        ),
+
+        // 2) Read-only Scrubber + Zeitangaben unten — visuelle
+        //    Info ohne Interaktivität. Gradient + Padding sind 1:1
+        //    von _buildControlsOverlay übernommen, damit der Übergang
+        //    lock ↔ unlock visuell konsistent ist.
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: AnimatedOpacity(
+            opacity: _visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: IgnorePointer(
+              ignoring: true,
+              child: Container(
+                // right: 28 + bottom: 12 synchron zum unlocked
+                // Bottom-Container — Lock/Unlock-Übergang ohne Sprung.
+                padding: const EdgeInsets.only(
+                  left: 28,
+                  right: 28,
+                  top: 28,
+                  bottom: 12,
+                ),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.8),
+                    ],
+                  ),
+                ),
+                child: widget.scrubRow,
+              ),
+            ),
+          ),
+        ),
+
+        // 3) Lock-Button horizontal MITTIG, vertikal so hoch wie
+        //    möglich. User-Wunsch: roter Ring (Radius ~46 in 96-Box,
+        //    Top-Rand des Rings bei box.top + 2) soll fast am
+        //    Bildschirm-Top sitzen. Mit Positioned(top: topInset)
+        //    sitzt der Ring damit bei safeArea + 2 px.
+        Positioned(
+          top: topInset,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: SizedBox(
+          width: 96,
+          height: 96,
+          child: AnimatedOpacity(
+            opacity: _visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: IgnorePointer(
+              ignoring: !_visible,
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: _onDown,
+                onPointerUp: _onUp,
+                onPointerCancel: _onUp,
+                child: AnimatedBuilder(
+                  animation: _ring,
+                  builder: (context, _) {
+                    return CustomPaint(
+                      painter: _UnlockRingPainter(
+                        progress: _ring.value,
+                        color: AppTheme.accent,
+                      ),
+                      child: const Center(
+                        child: Icon(
+                          Icons.lock_rounded,
+                          color: Colors.white,
+                          size: 56,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Zeichnet einen kreisförmigen Fortschrittsring um den Lock-Button
+/// während des 5-Sekunden-Holds zum Aufschließen. Startet oben
+/// (12-Uhr-Position) und füllt im Uhrzeigersinn.
+class _UnlockRingPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  const _UnlockRingPainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    final center = Offset(size.width / 2, size.height / 2);
+    // Ring sitzt knapp innerhalb der 40x40-Slot-Box, lässt 2 px
+    // Luft zum Rand → optisch klar als "Drumherum" erkennbar.
+    final radius = math.min(size.width, size.height) / 2 - 2;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -math.pi / 2, // 12-Uhr-Position als Start
+      2 * math.pi * progress,
+      false,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_UnlockRingPainter old) =>
+      old.progress != progress || old.color != color;
 }

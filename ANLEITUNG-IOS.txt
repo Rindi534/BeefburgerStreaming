@@ -1,0 +1,210 @@
+==============================================================================
+            BeefburgerStreaming v2.0 - iPhone & iPad Anleitung
+==============================================================================
+
+Lokales Streaming fuer deine eigenen Filme und Serien direkt auf iPhone
+oder iPad. Kein Internet noetig, keine Cloud, keine Konten.
+
+Aufbau des Medien-Ordners siehe ORDNERSTRUKTUR.txt.
+
+
+INHALT
+==============================================================================
+   1. Erster Start
+   2. Startseite & Detail-Ansicht
+   3. Der Player
+   4. Untertitel & Audio-Spuren
+   5. Naechste Folge / Auto-Play
+   6. Picture-in-Picture (PiP) & AirPlay
+   7. Lock-Modus
+   8. Vorschaubilder in der Seekleiste
+   9. Sperrbildschirm & Lautstaerketasten
+  10. Einstellungen
+  11. iPad-Tastaturkuerzel
+  12. Tipps & bekannte Eigenheiten
+
+
+1. ERSTER START
+==============================================================================
+
+  1) Medien-Ordner auf dem Geraet vorbereiten - z.B. in der iOS-
+     Dateien-App. Aufbau siehe ORDNERSTRUKTUR.txt.
+  2) BeefburgerStreaming starten.
+  3) Oben rechts auf das Zahnrad > "Medien-Ordner" > den Ordner
+     auswaehlen (iOS Datei-Picker).
+  4) Die App scannt automatisch. Fertig.
+
+
+2. STARTSEITE & DETAIL-ANSICHT
+==============================================================================
+
+STARTSEITE
+  - Oben: "Weiterschauen"-Leiste mit angefangenen Filmen/Episoden.
+    Per Wischen scrollen.
+  - Unten: Raster aller Medien. Tap oeffnet die Detail-Ansicht.
+
+DETAIL-ANSICHT
+  - Film: "Abspielen" oder bei Fortschritt "Weiterschauen" +
+    "Neu starten".
+  - Serie: Staffel auswaehlen, Episode antippen.
+
+
+3. DER PLAYER
+==============================================================================
+
+Der Player oeffnet automatisch im Querformat (Landscape).
+
+Tap aufs Video pausiert/spielt. Die Steuerleiste blendet sich nach
+3 Sekunden Inaktivitaet aus und kommt mit dem naechsten Tap zurueck.
+
+OBEN LINKS:  X (Schliessen), Serien-/Folgenname.
+OBEN RECHTS: Untertitel | Audio | PiP | Lock.
+MITTE:       -10s | Play/Pause | +10s.
+UNTEN LINKS: Aktuelle Zeit.
+UNTEN MITTE: Progressbar (tappen oder ziehen).
+UNTEN RECHTS: Gesamtdauer + Naechste-Folge-Button (wenn vorhanden).
+
+
+4. UNTERTITEL & AUDIO-SPUREN
+==============================================================================
+
+UNTERTITEL
+  Untertitel-Icon oben rechts oeffnet die Spur-Auswahl. Tap auf "Aus"
+  oder eine eingebettete Spur. Eine externe ".srt"-Datei neben dem
+  Video wird automatisch erkannt und angeboten.
+
+AUDIO-SPUREN
+  Note-Icon oeffnet die Spur-Auswahl. "Aus" stellt den Ton komplett
+  ab. Bei mehreren Spuren (z.B. Deutsch + Englisch) hier wechseln.
+
+
+5. NAECHSTE FOLGE / AUTO-PLAY
+==============================================================================
+
+Gegen Ende einer Folge erscheint rechts unten ein Countdown-Button
+"Naechste Folge". Tap startet sie sofort, abwarten startet sie nach
+ein paar Sekunden automatisch.
+
+Zum Abspann-Schauen: irgendwo ausserhalb des Buttons tappen. Die
+naechste Folge startet dann nicht automatisch.
+
+
+6. PICTURE-IN-PICTURE (PiP) & AIRPLAY
+==============================================================================
+
+PiP
+  PiP-Icon oben rechts startet den Picture-in-Picture-Modus: das
+  Video laeuft in einem kleinen Fenster weiter, du kannst die App
+  verlassen und etwas anderes machen.
+
+  Beenden: PiP-Fenster antippen, dann Vollbild-Button im PiP-
+  Overlay. Oder direkt zur App zurueckkehren.
+
+  PiP funktioniert mit den meisten Formaten. Bei manchen MKV-Dateien
+  mit speziellen Codec-Kombis kann es vorkommen, dass PiP nicht
+  startet - dann der Hinweis "PiP nicht verfuegbar".
+
+AIRPLAY
+  Du kannst den Audio- und Video-Stream per AirPlay an Apple TV,
+  HomePod oder andere AirPlay-Geraete senden. Routing geht ueber
+  das iOS-Kontrollzentrum (von oben rechts wischen > AirPlay-
+  Icon).
+
+
+7. LOCK-MODUS
+==============================================================================
+
+Tap auf das Schloss-Icon oben rechts (offenes Schloss). Sofort
+gesperrt:
+  - Alle Tasten und Tipps gesperrt
+  - Bedienelemente verschwinden
+  - Sichtbar bleiben: Serientitel, Folgenname, Zeit, Progressbar
+    und das geschlossene Schloss in der Bildmitte oben
+  - Auch das blendet sich nach 3 Sekunden aus, kommt beim Tippen
+    irgendwo zurueck.
+
+Aufschliessen
+  Das grosse geschlossene Schloss in der Mitte 5 Sekunden lang
+  GEDRUECKT HALTEN. Ein roter Ring zeigt den Fortschritt. Loslassen
+  vor Ablauf bricht ab.
+
+Hinweis
+  Wenn am Folgenende der Naechste-Folge-Button erscheint, ist das
+  die einzige Ausnahme - er bleibt auch im Lock-Modus tappbar.
+
+
+8. VORSCHAUBILDER IN DER SEEKLEISTE
+==============================================================================
+
+Wenn du den Progressbar-Daumen ziehst und dabei laenger draufbleibst,
+zeigt ein kleines Vorschaubild die Stelle. Hilfreich zum schnellen
+Springen.
+
+Vorschaubilder werden bei der ersten Wiedergabe im Hintergrund erzeugt
+und gespeichert. Deaktivierbar in den Einstellungen.
+
+
+9. SPERRBILDSCHIRM & LAUTSTAERKETASTEN
+==============================================================================
+
+Wenn ein Video laeuft, zeigt iOS auf dem Sperrbildschirm und im
+Kontrollzentrum eine "Now Playing"-Karte mit Titel, Folge, Cover und
+Play/Pause-Buttons. Skip-Buttons springen zur naechsten/vorherigen
+Folge.
+
+Die Hardware-Lautstaerketasten regeln den Player-Ton wie gewohnt.
+
+
+10. EINSTELLUNGEN
+==============================================================================
+
+Zahnrad oben rechts auf der Startseite:
+
+  MEDIEN-ORDNER       Wechseln/neu setzen.
+  VORSCHAUBILDER      An/aus.
+  SLEEP-MODUS         Wenn an: Player-Fortschritt wird NICHT
+                      gespeichert. Sichtbar im Player am Mond-Icon.
+                      Praktisch fuer kurze Probe-Wiedergaben.
+  BIBLIOTHEK NEU SCANNEN  Wenn neue Medien im Ordner liegen.
+  VERSION             Aktuell installierte Version.
+
+
+11. iPAD-TASTATURKUERZEL
+==============================================================================
+
+Wenn dein iPad eine Tastatur (Magic Keyboard etc.) hat:
+
+  Space                          Play / Pause
+  Pfeil links / rechts           -10s / +10s
+  C oder S                       Untertitel an/aus
+  A                              Audio an/aus
+  P                              Picture-in-Picture an/aus
+  L                              Lock-Modus aktivieren
+  Backspace                      Player schliessen
+
+
+12. TIPPS & BEKANNTE EIGENHEITEN
+==============================================================================
+
+  - Audio nach Pause/Play: bei VLC-basierter Wiedergabe (MKVs etc.)
+    kann es nach Pause + Play kurz dauern bis der Ton wieder ankommt
+    (1-2 Sekunden). Das ist eine bekannte iOS-MobileVLCKit-Eigenheit
+    ueber die wir keine Kontrolle haben. Bei MP4-Dateien (AVPlayer-
+    Pfad) tritt es nicht auf.
+
+  - Cover-Erkennung: "poster.jpg" oder "cover.png" im Medien-Ordner
+    wird automatisch als Cover verwendet. "banner.jpg" als Banner.
+
+  - Bei Problemen ist meist ein Bibliotheks-Neuscan ueber die
+    Einstellungen die schnellste Loesung.
+
+  - Externe ".srt"-Untertitel: einfach gleichen Dateinamen wie das
+    Video verwenden ("Folge1.mkv" + "Folge1.srt") - sie werden
+    automatisch erkannt und vorgeschlagen.
+
+
+==============================================================================
+                     BeefburgerStreaming v2.0
+                Lokales Streaming auf iPhone & iPad
+                 (Ordneraufbau: siehe ORDNERSTRUKTUR.txt)
+==============================================================================
