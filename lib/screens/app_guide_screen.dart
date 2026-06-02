@@ -1,23 +1,276 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// In-app guide covering every feature of the iOS app. Paired with
-/// [FolderConventionScreen] which handles the "how do I prepare the
-/// files" side of things. Both are reachable from Settings > Hilfe.
+/// In-App-Anleitung — platform-conditional. Auf Windows wird der
+/// Windows-Body gerendert, auf iOS/iPad der iOS-Body. Beide leben
+/// in derselben Datei damit ein Branch-Merge sie nicht mehr gegen-
+/// seitig ueberschreibt (ein Problem aus der alten ios-support-
+/// Aera). Helper-Widgets (_intro, _sectionTitle, _featureCard,
+/// _tipCard) werden von beiden Bodies geteilt.
 class AppGuideScreen extends StatelessWidget {
   const AppGuideScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final isWindows = Platform.isWindows;
     return Scaffold(
       appBar: AppBar(
         title: const Text('App-Anleitung'),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
-        children: [
-          _intro(context),
-          const SizedBox(height: 24),
+        children: isWindows
+            ? _windowsChildren(context)
+            : _iosChildren(context),
+      ),
+    );
+  }
+
+  /// Windows-Version der Anleitung. Kuerzer als iOS weil viele Sektionen
+  /// (PiP, AirPlay, Sperrbildschirm) hier nicht gelten; dafuer kommen
+  /// Tastenkuerzel, Multi-Monitor-Vollbild und Screenshot/Clip-Werkzeuge
+  /// hinzu.
+  List<Widget> _windowsChildren(BuildContext context) {
+    return [
+      _intro(context, isWindows: true),
+      const SizedBox(height: 24),
+
+      // ─────────────────────────── Navigation ───────────────────────────
+      _sectionTitle(context, 'Navigation'),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.home_rounded,
+        title: 'Startseite',
+        description:
+            'Zentraler Einstieg mit Raster aller Filme und Serien. '
+            'Oben Logo, Suchleiste, Aktualisieren- und '
+            'Einstellungs-Knopf. Sobald du etwas angefangen hast '
+            'erscheint dazwischen die Weiterschauen-Leiste.',
+        highlights: const [
+          'Jede Kachel zeigt das Cover',
+          'Fehlt ein Cover, wird ein Auto-Frame aus dem Video genommen',
+          'Klick auf eine Kachel → Detail-Ansicht',
+          'F5 oder Aktualisieren-Knopf → Bibliothek neu scannen',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.search_rounded,
+        title: 'Suche',
+        description:
+            'Live-Filter in der Suchleiste oben. Treffer erscheinen '
+            'in einem Dropdown gruppiert nach Filmen, Serien und Folgen.',
+        highlights: const [
+          'Treffer am Wortanfang werden zuerst gezeigt',
+          'Film klicken → startet direkt im Player',
+          'Folge klicken → spielt sofort, naechste Folge wird automatisch angehaengt',
+          'Esc oder Klick ausserhalb schliesst das Dropdown',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.history_rounded,
+        title: 'Weiterschauen-Leiste',
+        description:
+            'Horizontale Reihe mit angefangenen Filmen und Folgen. '
+            'Ab 90 % Fortschritt gilt etwas als gesehen und faellt '
+            'automatisch heraus.',
+        highlights: const [
+          'Mausrad uebers Karten-Set scrollt horizontal',
+          'Maus-Drag zum schnelleren Durchblaettern',
+          'Fortschrittsbalken unter jeder Karte',
+          'Klick spielt direkt an der letzten Position weiter',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+
+      // ─────────────────────────── Player ───────────────────────────
+      _sectionTitle(context, 'Video-Player'),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.play_circle_filled_rounded,
+        title: 'Steuerung',
+        description:
+            'Klick aufs Video pausiert/spielt. Die Steuerleiste blendet '
+            'nach 3 Sekunden ohne Mausbewegung aus, kommt mit dem '
+            'naechsten Wackeln zurueck. Position wird automatisch gespeichert.',
+        highlights: const [
+          'Mittel: Skip-Buttons -10s und +10s, Play/Pause-Kreis dazwischen',
+          'Unten: Zeit links, Progressbar mit Hover-Vorschaubild, Sekundaere Icons rechts',
+          'Hover ueber Progressbar zeigt Vorschau des Frames',
+          'Zurueck-Pfeil oben links → schliesst Player und merkt die Position',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.fullscreen_rounded,
+        title: 'Vollbild',
+        description:
+            'Borderless Vollbild per F oder F11. Kein Fensterrahmen, '
+            'fuellt den kompletten Monitor — auch auf Multi-Monitor-'
+            'Setups wird der Bildschirm benutzt, auf dem das Fenster '
+            'gerade liegt.',
+        highlights: const [
+          'F oder F11 zum Umschalten',
+          'Klick aufs Taskleisten-Icon eines anderen Fensters holt es nach vorn',
+          'Neue Programmfenster poppen oberhalb, ohne dass die Taskleiste auftaucht',
+          'Klick auf einen anderen Monitor laesst das Vollbild unangetastet',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.subtitles_rounded,
+        title: 'Untertitel',
+        description:
+            'Eingebettete Untertitel in .mkv (auch ASS/SSA) werden '
+            'automatisch erkannt. Externe ".srt"-Dateien mit gleichem '
+            'Namen wie das Video werden zusaetzlich angeboten.',
+        highlights: const [
+          'Untertitel-Icon → Spur-Auswahl-Menue',
+          'Toggle per Taste C oder S',
+          '"Aus" deaktiviert alle Untertitel',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.music_note_rounded,
+        title: 'Audio-Spuren',
+        description:
+            'Bei Videos mit mehreren Tonspuren (z.B. DE + EN) Audio-'
+            'Icon → Sprache waehlen. "Aus" stellt den Ton komplett ab.',
+        highlights: const [
+          'Aktive Spur ist farbig markiert',
+          'Toggle (Aus ↔ erste Spur) per Taste A',
+          'Wechsel ohne Neustart der Wiedergabe',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.skip_next_rounded,
+        title: 'Auto-Play naechste Folge',
+        description:
+            'Am Ende einer Folge erscheint ein Countdown-Button mit '
+            'Vorschau der naechsten Folge aus dem selben Staffel-Ordner.',
+        highlights: const [
+          'Enter / Klick: sofort weiter',
+          'Backspace / Klick ausserhalb: Abspann ansehen (kein Auto-Play)',
+          'Naechste Folge = naechstgroessere Episodennummer im Ordner',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.lock_rounded,
+        title: 'Lock-Modus',
+        description:
+            'L druecken oder oben rechts aufs Schloss klicken. Im '
+            'Lock-Modus sind alle Klicks und Tastenkuerzel gesperrt. '
+            'Perfekt fuer Kinder oder die Katze auf der Tastatur.',
+        highlights: const [
+          'Sichtbar bleibt nur: Serientitel, Folge, Zeit, Progressbar, geschlossenes Schloss',
+          'Nach 3 Sekunden Inaktivitaet blendet auch das aus, kommt bei Mauswackeln zurueck',
+          'Aufschliessen: das grosse Schloss 5 Sekunden gedrueckt halten — roter Ring fuellt sich',
+          'Naechste-Folge-Button am Folgenende bleibt klickbar (einzige Ausnahme)',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.photo_camera_rounded,
+        title: 'Erweiterte Werkzeuge: Screenshot + Clip',
+        description:
+            'In den Einstellungen "Erweiterte Werkzeuge" aktivieren. '
+            'Dann erscheinen unten im Player zwei zusaetzliche Icons.',
+        highlights: const [
+          'Kamera-Icon: PNG-Screenshot der aktuellen Szene',
+          'Video-Icon: 1. Klick = Clip-Anfang, 2. Klick = Endpunkt + Dateiname',
+          'Clip wird ohne Re-Encoding gespeichert (verlustfrei + schnell)',
+          'Zielordner in den Einstellungen unter "Export-Ordner"',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+
+      // ───────────────────── Bibliothek & Cache ─────────────────────
+      _sectionTitle(context, 'Bibliothek & Cache'),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.refresh_rounded,
+        title: 'Bibliothek aktualisieren',
+        description:
+            'Nach jeder Aenderung am Medien-Ordner (Datei hinzugefuegt, '
+            'umbenannt, geloescht) F5 oder Aktualisieren-Symbol oben '
+            'rechts druecken. Ein Dialog zeigt was sich geaendert hat.',
+        highlights: const [
+          'Gruen: Neue Dateien — Haken setzen erzeugt direkt ein Vorschaubild',
+          'Orange: Geaenderte Dateien — Haken setzen erneuert das Vorschaubild',
+          'Rot: Verschwundene Dateien — Haken setzen loescht auch das gespeicherte Bild',
+          'Haken weg lassen = unveraendert stehen lassen',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _featureCard(
+        icon: Icons.delete_sweep_rounded,
+        title: 'Vorschaubild-Cache verwalten',
+        description:
+            'Einstellungen > Vorschau-Verwaltung. Hier kannst du pro '
+            'Medium einzeln das Vorschaubild zuruecksetzen, ein '
+            '"Behaltung"-Flag setzen (geschuetzt = nicht automatisch '
+            'geloescht) oder den gesamten Cache leeren.',
+        highlights: const [
+          'Baum-Ansicht: Serie/Staffel/Folge - jede Ebene einzeln steuerbar',
+          '"Alle merken" / "Alles freigeben" als Bulk-Aktionen',
+          '"Gesamten Cache leeren": wirft alle Vorschaubilder weg, betrifft NIE Originaldateien',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+
+      // ───────────────────── Tastenkuerzel ─────────────────────
+      _sectionTitle(context, 'Tastenkuerzel'),
+      const SizedBox(height: 12),
+      _tipCard(
+        icon: Icons.keyboard_rounded,
+        text:
+            'Space / Klick aufs Video → Play/Pause   ·   Pfeil ←→ → '
+            '±10 Sekunden   ·   Pfeil ↑↓ → Lautstaerke ±5 %   ·   '
+            'M → Stumm   ·   C oder S → Untertitel   ·   A → Audio   ·   '
+            'F / F11 → Vollbild   ·   L → Lock   ·   Esc → Player schliessen',
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, 'Gut zu wissen'),
+      const SizedBox(height: 12),
+      _tipCard(
+        icon: Icons.lock_rounded,
+        text:
+            'Alles bleibt lokal auf deinem PC. Keine Uploads, kein Account, '
+            'kein Internet noetig.',
+      ),
+      const SizedBox(height: 10),
+      _tipCard(
+        icon: Icons.folder_rounded,
+        text:
+            'Die App veraendert deine Originaldateien NIE — sie liest sie '
+            'nur. Auch "Cache leeren" betrifft nur generierte Vorschaubilder.',
+      ),
+      const SizedBox(height: 10),
+      _tipCard(
+        icon: Icons.bedtime_rounded,
+        text:
+            'Sleep-Modus (Einstellungen): wenn an, wird der aktuelle Player-'
+            'Fortschritt NICHT gespeichert. Sichtbar im Player am Mond-Icon. '
+            'Praktisch zum Probe-Schauen.',
+      ),
+    ];
+  }
+
+  /// iOS/iPad-Version — unveraenderter Bestand aus dem urspruenglichen
+  /// AppGuideScreen (vor der Platform-Aufteilung).
+  List<Widget> _iosChildren(BuildContext context) {
+    return [
+      _intro(context, isWindows: false),
+      const SizedBox(height: 24),
 
           // ─────────────────────────── Navigation ───────────────────────────
           _sectionTitle(context, 'Navigation'),
@@ -347,14 +600,12 @@ class AppGuideScreen extends StatelessWidget {
                 'Lautsprecher oder Apple TV streamen — die '
                 'Wiedergabe-Steuerung bleibt am iPhone.',
           ),
-        ],
-      ),
-    );
+    ];
   }
 
   // ─────────────────────────── Widgets ───────────────────────────
 
-  Widget _intro(BuildContext context) {
+  Widget _intro(BuildContext context, {required bool isWindows}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -370,10 +621,15 @@ class AppGuideScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Komplette Funktionsübersicht für die iPhone/iPad-App. '
-              'Wie du deine Videos aufs iPhone bekommst und den Ordner '
-              'aufbaust, steht unter „Ordner-Konvention" (eine Ebene '
-              'höher in den Einstellungen).',
+              isWindows
+                  ? 'Komplette Funktionsuebersicht fuer die Windows-App. '
+                      'Wie der Medien-Ordner aufgebaut sein muss, steht '
+                      'unter "Ordner-Konvention" (eine Ebene hoeher in '
+                      'den Einstellungen).'
+                  : 'Komplette Funktionsübersicht für die iPhone/iPad-App. '
+                      'Wie du deine Videos aufs iPhone bekommst und den Ordner '
+                      'aufbaust, steht unter „Ordner-Konvention" (eine Ebene '
+                      'höher in den Einstellungen).',
               style: TextStyle(
                 color: AppTheme.textPrimary.withValues(alpha: 0.9),
                 fontSize: 14,

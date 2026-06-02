@@ -1,56 +1,214 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// Anleitung für die Mobile-App: wie kommen Videos überhaupt aufs
-/// iPhone hinein, wie der Medien-Ordner aufgebaut sein muss, welche
-/// Konventionen die App beim Scan erwartet.
+/// Anleitung fuer den Medien-Ordner — platform-conditional. Auf
+/// Windows wird die Windows-Variante gerendert (freier Ordner per
+/// Datei-Picker), auf iOS die "Auf meinem iPhone"-Variante. Beide
+/// Bodies in derselben Datei damit Branch-Merges sie nicht
+/// gegenseitig ueberschreiben.
 class FolderConventionScreen extends StatelessWidget {
   const FolderConventionScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final isWindows = Platform.isWindows;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ordner-Konvention'),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
-        children: [
-          _intro(context),
-          const SizedBox(height: 24),
+        children: isWindows
+            ? _windowsChildren(context)
+            : _iosChildren(context),
+      ),
+    );
+  }
 
-          _sectionTitle(context, 'Videos aufs iPhone bringen'),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.folder_shared_rounded,
-            title: 'Über die Dateien-App',
-            description:
-                'BeefburgerStreaming bekommt seinen eigenen Ordner unter '
-                '„Auf meinem iPhone" → „BeefburgerStreaming" in der iOS-'
-                '„Dateien"-App. Dort hin kopierst du deine Filme und '
-                'Serien — die App liest sie von dort.',
-            highlights: const [
-              'Dateien-App öffnen',
-              'Im Reiter „Durchsuchen" → „Auf meinem iPhone" antippen',
-              'Ordner „BeefburgerStreaming" auswählen',
-              'Hier deine Filme/Serien-Ordner reinkopieren oder per AirDrop senden',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.cable_rounded,
-            title: 'Vom Computer übertragen',
-            description:
-                'Größere Dateien gehen am komfortabelsten per USB-Kabel '
-                'oder über den Mac/Windows-Finder.',
-            highlights: const [
-              'Mac: iPhone per Kabel anschließen → Finder → iPhone-Eintrag → Reiter „Dateien" → BeefburgerStreaming',
-              'Windows: iTunes oder Apple Devices App → Dateifreigabe → BeefburgerStreaming',
-              'Per AirDrop: einzelne Videos schnell vom Mac/iPhone aus an die App teilen',
-              'Per WLAN: Cloud-Apps (z. B. iCloud Drive) öffnen → Datei → „In Dateien sichern" → Auf meinem iPhone → BeefburgerStreaming',
-            ],
-          ),
-          const SizedBox(height: 28),
+  // ─────────────────────── Windows-Variante ───────────────────────
+
+  List<Widget> _windowsChildren(BuildContext context) {
+    return [
+      _intro(context, isWindows: true),
+      const SizedBox(height: 24),
+
+      _sectionTitle(context, 'Medien-Ordner einrichten'),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.folder_open_rounded,
+        title: 'Ordner waehlen',
+        description:
+            'BeefburgerStreaming nutzt einen beliebigen Ordner auf '
+            'deinem PC. Beim ersten Start fragt die App nach dem '
+            'Ordner; wechseln kannst du ihn jederzeit unter '
+            'Einstellungen > "Medien-Ordner".',
+        highlights: const [
+          'Lokale Festplatte (C:\\, D:\\, …) - schnellster Zugriff',
+          'Externe HDD/SSD - funktioniert ebenso',
+          'NAS / Netzlaufwerk - funktioniert, Performance je nach Verbindung',
+          'Der Ordner darf beliebig benannt sein',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, 'So sieht der Medien-Ordner aus'),
+      const SizedBox(height: 12),
+      _folderTreeCard(),
+      const SizedBox(height: 28),
+      _sectionTitle(context, 'Grundregeln'),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.tv_rounded,
+        title: 'Serien',
+        description:
+            'Ordner auf oberster Ebene mit Season-Unterordnern werden '
+            'als Serie erkannt. Jeder Staffel-Ordner enthaelt die '
+            'Episoden-Dateien.',
+        highlights: const [
+          'Serien-Ordner: z.B. "Breaking Bad"',
+          'Staffel-Ordner: "Season 1", "Season 2", …',
+          'Staffel-Namen koennen auch "Staffel 1" oder "S01" sein',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.movie_rounded,
+        title: 'Filme',
+        description:
+            'Eine einzelne Videodatei auf oberster Ebene oder ein '
+            'Film-Ordner ohne Staffel-Unterordner wird als Film '
+            'behandelt.',
+        highlights: const [
+          'Film als eigener Ordner (mit Cover)',
+          'Oder einzelne Videodatei direkt im Medien-Ordner',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.label_rounded,
+        title: 'Episoden-Benennung',
+        description:
+            'Episoden-Nummer irgendwo im Dateinamen. Das '
+            'S##E##-Format funktioniert am zuverlaessigsten.',
+        highlights: const [
+          'Empfohlen: "S01E03 - Titel.mkv"',
+          'Alternativ: "1x03 - Titel.mkv"',
+          'Alles ausser der Episoden-Nummer ist optional',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.image_rounded,
+        title: 'Cover, Banner, Thumbnail',
+        description:
+            'Bis zu drei Bilder pro Medium. Alle optional - fehlt '
+            'eines, greift eine Fallback-Kaskade. Fehlt alles, '
+            'erzeugt die App ein Standbild aus dem Video.',
+        highlights: const [
+          'cover.jpg - Hauptkachel auf der Startseite (Hochformat, ~300x450)',
+          'banner.jpg - grosses Kopfbild in der Detail-Ansicht (~1280x400)',
+          'thumbnail.jpg - Karte in der Weiterschauen-Leiste (16:9)',
+          'Alle Dateien im Wurzel-Ordner des Films / der Serie',
+          '.jpg und .png werden akzeptiert',
+          'Alternativ-Namen fuers Cover: poster.jpg oder folder.jpg',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.subtitles_rounded,
+        title: 'Untertitel',
+        description:
+            'Externe Untertitel-Dateien neben dem Video mit dem '
+            'gleichen Dateinamen (andere Endung) werden automatisch '
+            'erkannt. Eingebettete Untertitel in .mkv ebenfalls.',
+        highlights: const [
+          'Beispiel: "S01E01 - Pilot.mkv" + "S01E01 - Pilot.srt"',
+          'Erlaubte Endungen: .srt, .sub, .ass, .ssa, .vtt',
+          'Auswahl im Player ueber das Sprechblasen-Symbol',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.play_circle_outline_rounded,
+        title: 'Unterstuetzte Video-Formate',
+        description:
+            'Dateitypen die beim Scan erkannt und abgespielt werden. '
+            'Alle laufen durch denselben mpv-basierten Player.',
+        highlights: const [
+          '.mkv - empfohlen (eingebettete Untertitel + mehrere Tonspuren)',
+          '.mp4, .mov, .m4v - Standard-Container',
+          '.avi, .wmv, .flv - aeltere Container',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, 'Tipps'),
+      const SizedBox(height: 12),
+      _tipCard(
+        icon: Icons.refresh_rounded,
+        text:
+            'Neue Dateien oder Ordner hinzugefuegt? F5 oder das '
+            'Aktualisieren-Symbol oben rechts auf der Startseite.',
+      ),
+      const SizedBox(height: 10),
+      _tipCard(
+        icon: Icons.auto_awesome_rounded,
+        text:
+            'Beim ersten Scan werden Vorschaubilder im Hintergrund '
+            'erzeugt - du kannst waehrenddessen ganz normal schauen.',
+      ),
+      const SizedBox(height: 10),
+      _tipCard(
+        icon: Icons.cleaning_services_rounded,
+        text:
+            'Videos aus dem Ordner geloescht? Bei der naechsten '
+            'Aktualisierung werden die zugehoerigen Vorschaubilder '
+            'automatisch aufgeraeumt - es sei denn du hast das Medium '
+            'in der Cache-Verwaltung "gemerkt".',
+      ),
+    ];
+  }
+
+  // ──────────────────────── iOS-Variante ────────────────────────
+
+  List<Widget> _iosChildren(BuildContext context) {
+    return [
+      _intro(context, isWindows: false),
+      const SizedBox(height: 24),
+
+      _sectionTitle(context, 'Videos aufs iPhone bringen'),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.folder_shared_rounded,
+        title: 'Über die Dateien-App',
+        description:
+            'BeefburgerStreaming bekommt seinen eigenen Ordner unter '
+            '„Auf meinem iPhone" → „BeefburgerStreaming" in der iOS-'
+            '„Dateien"-App. Dort hin kopierst du deine Filme und '
+            'Serien — die App liest sie von dort.',
+        highlights: const [
+          'Dateien-App öffnen',
+          'Im Reiter „Durchsuchen" → „Auf meinem iPhone" antippen',
+          'Ordner „BeefburgerStreaming" auswählen',
+          'Hier deine Filme/Serien-Ordner reinkopieren oder per AirDrop senden',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _ruleCard(
+        icon: Icons.cable_rounded,
+        title: 'Vom Computer übertragen',
+        description:
+            'Größere Dateien gehen am komfortabelsten per USB-Kabel '
+            'oder über den Mac/Windows-Finder.',
+        highlights: const [
+          'Mac: iPhone per Kabel anschließen → Finder → iPhone-Eintrag → Reiter „Dateien" → BeefburgerStreaming',
+          'Windows: iTunes oder Apple Devices App → Dateifreigabe → BeefburgerStreaming',
+          'Per AirDrop: einzelne Videos schnell vom Mac/iPhone aus an die App teilen',
+          'Per WLAN: Cloud-Apps (z. B. iCloud Drive) öffnen → Datei → „In Dateien sichern" → Auf meinem iPhone → BeefburgerStreaming',
+        ],
+      ),
+      const SizedBox(height: 28),
 
           _sectionTitle(context, 'So sieht der Medien-Ordner aus'),
           const SizedBox(height: 12),
@@ -187,12 +345,12 @@ class FolderConventionScreen extends StatelessWidget {
                 'Standbilder und Cache liegen separat in den App-Daten und '
                 'lassen sich über die Einstellungen jederzeit leeren.',
           ),
-        ],
-      ),
-    );
+    ];
   }
 
-  Widget _intro(BuildContext context) {
+  // ─────────────────────────── Widgets ───────────────────────────
+
+  Widget _intro(BuildContext context, {required bool isWindows}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -208,10 +366,15 @@ class FolderConventionScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'BeefburgerStreaming nutzt einen eigenen Ordner in der '
-              'iOS-Dateien-App. Halte die folgenden Konventionen ein, '
-              'und Serien, Filme, Cover und Untertitel werden direkt '
-              'beim Scan korrekt erkannt.',
+              isWindows
+                  ? 'BeefburgerStreaming scannt einen frei waehlbaren '
+                      'Ordner auf deinem PC. Halte die folgenden '
+                      'Konventionen ein, und Serien, Filme, Cover und '
+                      'Untertitel werden beim Scan korrekt erkannt.'
+                  : 'BeefburgerStreaming nutzt einen eigenen Ordner in der '
+                      'iOS-Dateien-App. Halte die folgenden Konventionen ein, '
+                      'und Serien, Filme, Cover und Untertitel werden direkt '
+                      'beim Scan korrekt erkannt.',
               style: TextStyle(
                 color: AppTheme.textPrimary.withValues(alpha: 0.9),
                 fontSize: 14,
@@ -235,7 +398,24 @@ class FolderConventionScreen extends StatelessWidget {
   }
 
   Widget _folderTreeCard() {
-    const tree = '''BeefburgerStreaming/         ← in der Dateien-App
+    final tree = Platform.isWindows
+        ? '''D:\\Filme\\                    ← dein gewaehlter Medien-Ordner
+├── Breaking Bad\\              ← Serie
+│   ├── Season 1\\
+│   │   ├── S01E01 - Pilot.mkv
+│   │   ├── S01E01 - Pilot.srt   ← externe Untertitel
+│   │   └── S01E02 - Cat's in the Bag.mkv
+│   ├── Season 2\\
+│   │   └── S02E01 - Seven Thirty-Seven.mkv
+│   └── cover.jpg
+│
+├── Inception\\                 ← Film (eigener Ordner)
+│   ├── Inception.mkv
+│   ├── Inception.srt
+│   └── cover.jpg
+│
+└── Pulp Fiction.mp4           ← Film (einzelne Datei)'''
+        : '''BeefburgerStreaming/         ← in der Dateien-App
 ├── Breaking Bad/              ← Serie
 │   ├── Season 1/
 │   │   ├── S01E01 - Pilot.mkv
@@ -252,7 +432,8 @@ class FolderConventionScreen extends StatelessWidget {
 │
 └── Pulp Fiction.mp4           ← Film (einzelne Datei)''';
 
-    return Container(
+    return Container(  // hoisted: tree is built per Platform above
+
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppTheme.surface,
