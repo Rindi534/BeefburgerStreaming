@@ -2,11 +2,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// Anleitung fuer den Medien-Ordner — platform-conditional. Auf
-/// Windows wird die Windows-Variante gerendert (freier Ordner per
-/// Datei-Picker), auf iOS die "Auf meinem iPhone"-Variante. Beide
-/// Bodies in derselben Datei damit Branch-Merges sie nicht
-/// gegenseitig ueberschreiben.
+/// Ordner-Konvention — platform-conditional. Auf Windows zeigt sie
+/// die Pfad-Logik des frei waehlbaren Medien-Ordners, auf iOS die
+/// Logik des "Auf meinem iPhone"-Ordners. Beide in derselben Datei,
+/// um Branch-Merge-Konflikte zu vermeiden.
 class FolderConventionScreen extends StatelessWidget {
   const FolderConventionScreen({super.key});
 
@@ -26,331 +25,340 @@ class FolderConventionScreen extends StatelessWidget {
     );
   }
 
-  // ─────────────────────── Windows-Variante ───────────────────────
+  // ──────────────────────────────────────────────────────────────
+  //                          W I N D O W S
+  // ──────────────────────────────────────────────────────────────
 
   List<Widget> _windowsChildren(BuildContext context) {
     return [
-      _intro(context, isWindows: true),
+      _intro(
+        context,
+        'BeefburgerStreaming scannt einen frei waehlbaren Ordner auf '
+        'deinem PC. Diese Anleitung zeigt, wie der Ordner aufgebaut '
+        'sein muss, damit Serien, Filme, Cover und Untertitel beim '
+        'Scan korrekt erkannt werden.',
+      ),
       const SizedBox(height: 24),
 
-      _sectionTitle(context, 'Medien-Ordner einrichten'),
+      _sectionTitle(context, '1. Medien-Ordner waehlen'),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.folder_open_rounded,
-        title: 'Ordner waehlen',
-        description:
-            'BeefburgerStreaming nutzt einen beliebigen Ordner auf '
-            'deinem PC. Beim ersten Start fragt die App nach dem '
-            'Ordner; wechseln kannst du ihn jederzeit unter '
-            'Einstellungen > "Medien-Ordner".',
-        highlights: const [
-          'Lokale Festplatte (C:\\, D:\\, …) - schnellster Zugriff',
-          'Externe HDD/SSD - funktioniert ebenso',
-          'NAS / Netzlaufwerk - funktioniert, Performance je nach Verbindung',
-          'Der Ordner darf beliebig benannt sein',
+        title: 'Wo darf der Ordner liegen?',
+        bullets: const [
+          'Lokale Festplatte (C:\\, D:\\, …) — schnellster Zugriff',
+          'Externe HDD oder SSD — funktioniert genauso',
+          'NAS oder Netzlaufwerk — funktioniert, Performance je nach Verbindung',
+          'Der Ordner darf frei benannt sein',
+          'Wechseln jederzeit unter Einstellungen → Medien-Ordner',
         ],
       ),
 
       const SizedBox(height: 28),
-      _sectionTitle(context, 'So sieht der Medien-Ordner aus'),
+      _sectionTitle(context, '2. So sieht der Ordner aus'),
       const SizedBox(height: 12),
-      _folderTreeCard(),
+      _treeCard(_windowsTree),
+
       const SizedBox(height: 28),
-      _sectionTitle(context, 'Grundregeln'),
+      _sectionTitle(context, '3. Grundregeln'),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.tv_rounded,
         title: 'Serien',
-        description:
-            'Ordner auf oberster Ebene mit Season-Unterordnern werden '
-            'als Serie erkannt. Jeder Staffel-Ordner enthaelt die '
-            'Episoden-Dateien.',
-        highlights: const [
+        bullets: const [
+          'Ordner auf oberster Ebene mit Season-Unterordnern wird als Serie erkannt',
           'Serien-Ordner: z.B. "Breaking Bad"',
-          'Staffel-Ordner: "Season 1", "Season 2", …',
-          'Staffel-Namen koennen auch "Staffel 1" oder "S01" sein',
+          'Staffel-Ordner: "Season 1", "Staffel 1" oder "S01"',
+          'In jedem Staffel-Ordner liegen die Episoden-Dateien',
         ],
       ),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.movie_rounded,
         title: 'Filme',
-        description:
-            'Eine einzelne Videodatei auf oberster Ebene oder ein '
-            'Film-Ordner ohne Staffel-Unterordner wird als Film '
-            'behandelt.',
-        highlights: const [
-          'Film als eigener Ordner (mit Cover)',
-          'Oder einzelne Videodatei direkt im Medien-Ordner',
+        bullets: const [
+          'Eine einzelne Videodatei direkt im Medien-Ordner — fertig',
+          'Oder ein eigener Film-Ordner mit Video + Cover drin',
         ],
       ),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.label_rounded,
         title: 'Episoden-Benennung',
-        description:
-            'Episoden-Nummer irgendwo im Dateinamen. Das '
-            'S##E##-Format funktioniert am zuverlaessigsten.',
-        highlights: const [
+        bullets: const [
+          'Episoden-Nummer im Dateinamen, damit die Reihenfolge stimmt',
           'Empfohlen: "S01E03 - Titel.mkv"',
           'Alternativ: "1x03 - Titel.mkv"',
           'Alles ausser der Episoden-Nummer ist optional',
         ],
       ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, '4. Bilder'),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.image_rounded,
         title: 'Cover, Banner, Thumbnail',
-        description:
-            'Bis zu drei Bilder pro Medium. Alle optional - fehlt '
-            'eines, greift eine Fallback-Kaskade. Fehlt alles, '
-            'erzeugt die App ein Standbild aus dem Video.',
-        highlights: const [
-          'cover.jpg - Hauptkachel auf der Startseite (Hochformat, ~300x450)',
-          'banner.jpg - grosses Kopfbild in der Detail-Ansicht (~1280x400)',
-          'thumbnail.jpg - Karte in der Weiterschauen-Leiste (16:9)',
-          'Alle Dateien im Wurzel-Ordner des Films / der Serie',
-          '.jpg und .png werden akzeptiert',
-          'Alternativ-Namen fuers Cover: poster.jpg oder folder.jpg',
-        ],
-      ),
-      const SizedBox(height: 12),
-      _ruleCard(
-        icon: Icons.subtitles_rounded,
-        title: 'Untertitel',
-        description:
-            'Externe Untertitel-Dateien neben dem Video mit dem '
-            'gleichen Dateinamen (andere Endung) werden automatisch '
-            'erkannt. Eingebettete Untertitel in .mkv ebenfalls.',
-        highlights: const [
-          'Beispiel: "S01E01 - Pilot.mkv" + "S01E01 - Pilot.srt"',
-          'Erlaubte Endungen: .srt, .sub, .ass, .ssa, .vtt',
-          'Auswahl im Player ueber das Sprechblasen-Symbol',
-        ],
-      ),
-      const SizedBox(height: 12),
-      _ruleCard(
-        icon: Icons.play_circle_outline_rounded,
-        title: 'Unterstuetzte Video-Formate',
-        description:
-            'Dateitypen die beim Scan erkannt und abgespielt werden. '
-            'Alle laufen durch denselben mpv-basierten Player.',
-        highlights: const [
-          '.mkv - empfohlen (eingebettete Untertitel + mehrere Tonspuren)',
-          '.mp4, .mov, .m4v - Standard-Container',
-          '.avi, .wmv, .flv - aeltere Container',
+        bullets: const [
+          'cover.jpg — Hauptkachel auf der Startseite (~300x450, Hochformat)',
+          'banner.jpg — grosses Kopfbild in der Detail-Ansicht (~1280x400)',
+          'thumbnail.jpg — Karte in der Weiterschauen-Leiste (16:9)',
+          'Alle drei optional — fehlt eines, greift eine Fallback-Kaskade',
+          'Fehlt alles, erzeugt die App ein Standbild aus dem Video',
+          'Alternativ-Namen fuers Cover: poster.jpg, folder.jpg',
+          'PNG oder JPG, im Wurzel-Ordner des Films / der Serie',
         ],
       ),
 
       const SizedBox(height: 28),
-      _sectionTitle(context, 'Tipps'),
+      _sectionTitle(context, '5. Untertitel'),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.subtitles_rounded,
+        title: 'Extern oder eingebettet',
+        bullets: const [
+          'Eingebettete Untertitel in .mkv werden automatisch erkannt',
+          'Externe Datei: gleicher Name wie das Video, nur andere Endung',
+          'Beispiel: "S01E01 - Pilot.mkv" + "S01E01 - Pilot.srt"',
+          'Datei liegt im selben Ordner wie das Video',
+          'Erlaubte Endungen: .srt, .sub, .ass, .ssa, .vtt',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, '6. Unterstuetzte Formate'),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.play_circle_outline_rounded,
+        title: 'Welche Video-Formate?',
+        bullets: const [
+          '.mkv — empfohlen (eingebettete Untertitel + mehrere Tonspuren)',
+          '.mp4, .mov, .m4v — Standard-Container',
+          '.avi, .wmv, .flv — aeltere Container, werden auch gelesen',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, '7. Tipps'),
       const SizedBox(height: 12),
       _tipCard(
         icon: Icons.refresh_rounded,
         text:
-            'Neue Dateien oder Ordner hinzugefuegt? F5 oder das '
-            'Aktualisieren-Symbol oben rechts auf der Startseite.',
+            'Neue Dateien oder Ordner hinzugefuegt? F5 oder das Aktualisieren-'
+            'Symbol oben rechts auf der Startseite.',
       ),
       const SizedBox(height: 10),
       _tipCard(
         icon: Icons.auto_awesome_rounded,
         text:
-            'Beim ersten Scan werden Vorschaubilder im Hintergrund '
-            'erzeugt - du kannst waehrenddessen ganz normal schauen.',
+            'Beim ersten Scan werden Vorschaubilder im Hintergrund erzeugt — '
+            'du kannst waehrenddessen schon ganz normal schauen.',
       ),
       const SizedBox(height: 10),
       _tipCard(
         icon: Icons.cleaning_services_rounded,
         text:
-            'Videos aus dem Ordner geloescht? Bei der naechsten '
-            'Aktualisierung werden die zugehoerigen Vorschaubilder '
-            'automatisch aufgeraeumt - es sei denn du hast das Medium '
-            'in der Cache-Verwaltung "gemerkt".',
+            'Datei spaeter aus dem Ordner geloescht? Bei der naechsten '
+            'Aktualisierung werden die zugehoerigen Vorschaubilder automatisch '
+            'aufgeraeumt — es sei denn, du hast das Medium in der Cache-'
+            'Verwaltung gemerkt.',
       ),
     ];
   }
 
-  // ──────────────────────── iOS-Variante ────────────────────────
+  // ──────────────────────────────────────────────────────────────
+  //                          i O S  /  iPad
+  // ──────────────────────────────────────────────────────────────
 
   List<Widget> _iosChildren(BuildContext context) {
     return [
-      _intro(context, isWindows: false),
+      _intro(
+        context,
+        'BeefburgerStreaming nutzt einen eigenen Ordner in der iOS-'
+        'Dateien-App. Diese Anleitung zeigt, wie du Videos auf das '
+        'Geraet bekommst und den Ordner so aufbaust, dass Serien, '
+        'Filme, Cover und Untertitel beim Scan korrekt erkannt werden.',
+      ),
       const SizedBox(height: 24),
 
-      _sectionTitle(context, 'Videos aufs iPhone bringen'),
+      _sectionTitle(context, '1. Videos aufs iPhone/iPad bringen'),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.folder_shared_rounded,
-        title: 'Über die Dateien-App',
-        description:
-            'BeefburgerStreaming bekommt seinen eigenen Ordner unter '
-            '„Auf meinem iPhone" → „BeefburgerStreaming" in der iOS-'
-            '„Dateien"-App. Dort hin kopierst du deine Filme und '
-            'Serien — die App liest sie von dort.',
-        highlights: const [
-          'Dateien-App öffnen',
-          'Im Reiter „Durchsuchen" → „Auf meinem iPhone" antippen',
-          'Ordner „BeefburgerStreaming" auswählen',
-          'Hier deine Filme/Serien-Ordner reinkopieren oder per AirDrop senden',
+        title: 'Ueber die Dateien-App',
+        bullets: const [
+          'Dateien-App oeffnen',
+          'Reiter "Durchsuchen" → "Auf meinem iPhone/iPad"',
+          'Ordner "BeefburgerStreaming" auswaehlen',
+          'Hier deine Filme- und Serien-Ordner reinkopieren',
         ],
       ),
       const SizedBox(height: 12),
-      _ruleCard(
+      _card(
         icon: Icons.cable_rounded,
-        title: 'Vom Computer übertragen',
-        description:
-            'Größere Dateien gehen am komfortabelsten per USB-Kabel '
-            'oder über den Mac/Windows-Finder.',
-        highlights: const [
-          'Mac: iPhone per Kabel anschließen → Finder → iPhone-Eintrag → Reiter „Dateien" → BeefburgerStreaming',
-          'Windows: iTunes oder Apple Devices App → Dateifreigabe → BeefburgerStreaming',
-          'Per AirDrop: einzelne Videos schnell vom Mac/iPhone aus an die App teilen',
-          'Per WLAN: Cloud-Apps (z. B. iCloud Drive) öffnen → Datei → „In Dateien sichern" → Auf meinem iPhone → BeefburgerStreaming',
+        title: 'Vom Computer uebertragen',
+        bullets: const [
+          'Mac: iPhone per Kabel → Finder → iPhone-Eintrag → "Dateien" → BeefburgerStreaming',
+          'Windows: Apple Devices App → Dateifreigabe → BeefburgerStreaming',
+          'AirDrop: einzelne Videos vom Mac/iPhone an die App teilen',
+          'Cloud (iCloud, Dropbox …): Datei → "In Dateien sichern" → BeefburgerStreaming',
         ],
       ),
+
       const SizedBox(height: 28),
+      _sectionTitle(context, '2. So sieht der Ordner aus'),
+      const SizedBox(height: 12),
+      _treeCard(_iosTree),
 
-          _sectionTitle(context, 'So sieht der Medien-Ordner aus'),
-          const SizedBox(height: 12),
-          _folderTreeCard(),
-          const SizedBox(height: 28),
+      const SizedBox(height: 28),
+      _sectionTitle(context, '3. Grundregeln'),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.tv_rounded,
+        title: 'Serien',
+        bullets: const [
+          'Ordner auf oberster Ebene mit Season-Unterordnern wird als Serie erkannt',
+          'Serien-Ordner: z.B. "Breaking Bad"',
+          'Staffel-Ordner: "Season 1", "Staffel 1" oder "S01"',
+          'In jedem Staffel-Ordner liegen die Episoden-Dateien',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.movie_rounded,
+        title: 'Filme',
+        bullets: const [
+          'Eine einzelne Videodatei direkt im Medien-Ordner — fertig',
+          'Oder ein eigener Film-Ordner mit Video + Cover drin',
+        ],
+      ),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.label_rounded,
+        title: 'Episoden-Benennung',
+        bullets: const [
+          'Episoden-Nummer im Dateinamen, damit die Reihenfolge stimmt',
+          'Empfohlen: "S01E03 - Titel.mkv"',
+          'Alternativ: "1x03 - Titel.mkv"',
+          'Alles ausser der Episoden-Nummer ist optional',
+        ],
+      ),
 
-          _sectionTitle(context, 'Grundregeln'),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.tv_rounded,
-            title: 'Serien',
-            description:
-                'Ordner auf oberster Ebene mit „Season"-Unterordnern werden als Serie erkannt. '
-                'Jeder Staffel-Ordner enthält die Episoden-Dateien.',
-            highlights: const [
-              'Serien-Ordner: z. B. „Breaking Bad"',
-              'Staffel-Ordner: „Season 1", „Season 2", …',
-              'Staffel-Namen können auch „Staffel 1" oder „S01" sein',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.movie_rounded,
-            title: 'Filme',
-            description:
-                'Eine einzelne Videodatei auf oberster Ebene oder in einem Ordner ohne '
-                'Staffel-Unterordner wird als Film behandelt.',
-            highlights: const [
-              'Film als eigener Ordner (mit Cover)',
-              'Oder einzelne Videodatei direkt im Medien-Ordner',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.label_rounded,
-            title: 'Episoden-Benennung',
-            description:
-                'Episoden-Nummer irgendwo im Dateinamen, damit die Reihenfolge stimmt. '
-                'Das S##E##-Format funktioniert am zuverlässigsten.',
-            highlights: const [
-              'Empfohlen: „S01E03 - Titel.mkv"',
-              'Alternativen: „1x03 - Titel.mkv"',
-              'Alles außer der Episoden-Nummer ist optional',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.image_rounded,
-            title: 'Drei Bilder pro Medium: Cover · Banner · Thumbnail',
-            description:
-                'Jedes Bild hat einen anderen Zweck in der App. Alle drei '
-                'sind optional — fehlt eines, greift eine Fallback-Kaskade. '
-                'Fehlt alles, erzeugt die App ein Standbild aus dem Video.',
-            highlights: const [
-              'cover.jpg — Hauptkachel auf der Startseite (Hochformat, ~300×450)',
-              'banner.jpg — großes Kopfbild in der Detail-Ansicht (~1280×400)',
-              'thumbnail.jpg — Karte in der „Weiterschauen"-Leiste (16:9)',
-              'Alle Dateien im Wurzel-Ordner des Films / der Serie',
-              '.jpg und .png werden akzeptiert',
-              'Alternativ-Namen fürs Cover: poster.jpg · folder.jpg',
-              'Fallback Startseite:     cover → thumbnail → banner → Auto',
-              'Fallback Detail-Banner:  banner → cover → thumbnail',
-              'Fallback Weiterschauen:  thumbnail → banner → cover → Auto',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.subtitles_rounded,
-            title: 'Untertitel',
-            description:
-                'Untertitel werden auf zwei Arten unterstützt: extern als '
-                'eigene Datei neben dem Video, oder eingebettet (in .mkv '
-                'meistens automatisch dabei). Bei externen Dateien zählt '
-                'eines: der Dateiname muss exakt gleich lauten wie der '
-                'Video-Dateiname, nur mit einer Untertitel-Endung.',
-            highlights: const [
-              'Regel: gleicher Name wie das Video — nur andere Endung',
-              'Beispiel: „S01E01 - Pilot.mkv" → „S01E01 - Pilot.srt"',
-              'Datei liegt im selben Ordner wie das Video',
-              'Erlaubte Endungen: .srt · .sub · .ass · .ssa · .vtt',
-              'Eingebettete Untertitel in .mkv werden automatisch erkannt',
-              'Auswahl im Player über das Sprechblasen-Symbol oben',
-            ],
-          ),
-          const SizedBox(height: 12),
-          _ruleCard(
-            icon: Icons.play_circle_outline_rounded,
-            title: 'Unterstützte Video-Formate',
-            description:
-                'Das sind die Dateitypen, die beim Scan erkannt und '
-                'abgespielt werden. Alle gehen durch den gleichen Player '
-                '— inklusive Picture-in-Picture und eingebetteter '
-                'Untertitel.',
-            highlights: const [
-              '.mkv — empfohlen (eingebettete Untertitel + mehrere Tonspuren)',
-              '.mp4 — Standard-Container, kleinste Dateien',
-              '.mov — Apples Standard-Container',
-              '.m4v — iTunes-Variante von mp4',
-              '.avi — älterer Container',
-            ],
-          ),
+      const SizedBox(height: 28),
+      _sectionTitle(context, '4. Bilder'),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.image_rounded,
+        title: 'Cover, Banner, Thumbnail',
+        bullets: const [
+          'cover.jpg — Hauptkachel auf der Startseite (~300x450, Hochformat)',
+          'banner.jpg — grosses Kopfbild in der Detail-Ansicht (~1280x400)',
+          'thumbnail.jpg — Karte in der Weiterschauen-Leiste (16:9)',
+          'Alle drei optional — fehlt eines, greift eine Fallback-Kaskade',
+          'Fehlt alles, erzeugt die App ein Standbild aus dem Video',
+          'Alternativ-Namen fuers Cover: poster.jpg, folder.jpg',
+          'PNG oder JPG, im Wurzel-Ordner des Films / der Serie',
+        ],
+      ),
 
-          const SizedBox(height: 28),
-          _sectionTitle(context, 'Tipps'),
-          const SizedBox(height: 12),
-          _tipCard(
-            icon: Icons.refresh_rounded,
-            text:
-                'Neue Dateien oder Ordner hinzugefügt? In den Einstellungen '
-                'auf „Bibliothek aktualisieren" tippen oder direkt auf der '
-                'Startseite über das Aktualisieren-Symbol oben rechts.',
-          ),
-          const SizedBox(height: 10),
-          _tipCard(
-            icon: Icons.auto_awesome_rounded,
-            text:
-                'Beim ersten Scan werden Vorschaubilder im Hintergrund '
-                'erzeugt — die Fortschrittsanzeige oben verschwindet, '
-                'wenn alles fertig ist.',
-          ),
-          const SizedBox(height: 10),
-          _tipCard(
-            icon: Icons.cleaning_services_rounded,
-            text:
-                'Videos aus dem Medien-Ordner gelöscht? Bei der nächsten '
-                'Aktualisierung werden die zugehörigen Vorschaubilder '
-                'automatisch aufgeräumt.',
-          ),
-          const SizedBox(height: 10),
-          _tipCard(
-            icon: Icons.storage_rounded,
-            text:
-                'Die App belegt nur so viel Speicher, wie deine Videos brauchen. '
-                'Standbilder und Cache liegen separat in den App-Daten und '
-                'lassen sich über die Einstellungen jederzeit leeren.',
-          ),
+      const SizedBox(height: 28),
+      _sectionTitle(context, '5. Untertitel'),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.subtitles_rounded,
+        title: 'Extern oder eingebettet',
+        bullets: const [
+          'Eingebettete Untertitel in .mkv werden automatisch erkannt',
+          'Externe Datei: gleicher Name wie das Video, nur andere Endung',
+          'Beispiel: "S01E01 - Pilot.mkv" + "S01E01 - Pilot.srt"',
+          'Datei liegt im selben Ordner wie das Video',
+          'Erlaubte Endungen: .srt, .sub, .ass, .ssa, .vtt',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, '6. Unterstuetzte Formate'),
+      const SizedBox(height: 12),
+      _card(
+        icon: Icons.play_circle_outline_rounded,
+        title: 'Welche Video-Formate?',
+        bullets: const [
+          '.mkv — empfohlen (eingebettete Untertitel + mehrere Tonspuren)',
+          '.mp4, .mov, .m4v — Standard-Container',
+          '.avi — aelterer Container, wird auch gelesen',
+        ],
+      ),
+
+      const SizedBox(height: 28),
+      _sectionTitle(context, '7. Tipps'),
+      const SizedBox(height: 12),
+      _tipCard(
+        icon: Icons.refresh_rounded,
+        text:
+            'Neue Dateien oder Ordner hinzugefuegt? Aktualisieren-Symbol oben '
+            'rechts auf der Startseite tippen.',
+      ),
+      const SizedBox(height: 10),
+      _tipCard(
+        icon: Icons.auto_awesome_rounded,
+        text:
+            'Beim ersten Scan werden Vorschaubilder im Hintergrund erzeugt — '
+            'du kannst waehrenddessen schon ganz normal schauen.',
+      ),
+      const SizedBox(height: 10),
+      _tipCard(
+        icon: Icons.cleaning_services_rounded,
+        text:
+            'Datei spaeter aus dem Ordner geloescht? Bei der naechsten '
+            'Aktualisierung werden die zugehoerigen Vorschaubilder automatisch '
+            'aufgeraeumt — es sei denn, du hast das Medium gemerkt.',
+      ),
     ];
   }
 
-  // ─────────────────────────── Widgets ───────────────────────────
+  // ──────────────────────────────────────────────────────────────
+  //                       O R D N E R - B Ä U M E
+  // ──────────────────────────────────────────────────────────────
 
-  Widget _intro(BuildContext context, {required bool isWindows}) {
+  static const String _windowsTree = '''D:\\Filme\\                    ← dein gewaehlter Medien-Ordner
+├── Breaking Bad\\              ← Serie
+│   ├── Season 1\\
+│   │   ├── S01E01 - Pilot.mkv
+│   │   ├── S01E01 - Pilot.srt   ← externe Untertitel
+│   │   └── S01E02 - Cat's in the Bag.mkv
+│   ├── Season 2\\
+│   │   └── S02E01 - Seven Thirty-Seven.mkv
+│   └── cover.jpg
+│
+├── Inception\\                 ← Film (eigener Ordner)
+│   ├── Inception.mkv
+│   ├── Inception.srt
+│   └── cover.jpg
+│
+└── Pulp Fiction.mp4           ← Film (einzelne Datei)''';
+
+  static const String _iosTree = '''BeefburgerStreaming/         ← in der Dateien-App
+├── Breaking Bad/              ← Serie
+│   ├── Season 1/
+│   │   ├── S01E01 - Pilot.mkv
+│   │   ├── S01E01 - Pilot.srt   ← externe Untertitel
+│   │   └── S01E02 - Cat's in the Bag.mkv
+│   ├── Season 2/
+│   │   └── S02E01 - Seven Thirty-Seven.mkv
+│   └── cover.jpg
+│
+├── Inception/                 ← Film (eigener Ordner)
+│   ├── Inception.mkv
+│   ├── Inception.srt
+│   └── cover.jpg
+│
+└── Pulp Fiction.mp4           ← Film (einzelne Datei)''';
+
+  // ──────────────────────────────────────────────────────────────
+  //                       S H A R E D   W I D G E T S
+  // ──────────────────────────────────────────────────────────────
+
+  Widget _intro(BuildContext context, String text) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -366,15 +374,7 @@ class FolderConventionScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              isWindows
-                  ? 'BeefburgerStreaming scannt einen frei waehlbaren '
-                      'Ordner auf deinem PC. Halte die folgenden '
-                      'Konventionen ein, und Serien, Filme, Cover und '
-                      'Untertitel werden beim Scan korrekt erkannt.'
-                  : 'BeefburgerStreaming nutzt einen eigenen Ordner in der '
-                      'iOS-Dateien-App. Halte die folgenden Konventionen ein, '
-                      'und Serien, Filme, Cover und Untertitel werden direkt '
-                      'beim Scan korrekt erkannt.',
+              text,
               style: TextStyle(
                 color: AppTheme.textPrimary.withValues(alpha: 0.9),
                 fontSize: 14,
@@ -397,43 +397,8 @@ class FolderConventionScreen extends StatelessWidget {
     );
   }
 
-  Widget _folderTreeCard() {
-    final tree = Platform.isWindows
-        ? '''D:\\Filme\\                    ← dein gewaehlter Medien-Ordner
-├── Breaking Bad\\              ← Serie
-│   ├── Season 1\\
-│   │   ├── S01E01 - Pilot.mkv
-│   │   ├── S01E01 - Pilot.srt   ← externe Untertitel
-│   │   └── S01E02 - Cat's in the Bag.mkv
-│   ├── Season 2\\
-│   │   └── S02E01 - Seven Thirty-Seven.mkv
-│   └── cover.jpg
-│
-├── Inception\\                 ← Film (eigener Ordner)
-│   ├── Inception.mkv
-│   ├── Inception.srt
-│   └── cover.jpg
-│
-└── Pulp Fiction.mp4           ← Film (einzelne Datei)'''
-        : '''BeefburgerStreaming/         ← in der Dateien-App
-├── Breaking Bad/              ← Serie
-│   ├── Season 1/
-│   │   ├── S01E01 - Pilot.mkv
-│   │   ├── S01E01 - Pilot.srt   ← externe Untertitel
-│   │   └── S01E02 - Cat's in the Bag.mkv
-│   ├── Season 2/
-│   │   └── S02E01 - Seven Thirty-Seven.mkv
-│   └── cover.jpg
-│
-├── Inception/                 ← Film (eigener Ordner)
-│   ├── Inception.mkv
-│   ├── Inception.srt
-│   └── cover.jpg
-│
-└── Pulp Fiction.mp4           ← Film (einzelne Datei)''';
-
-    return Container(  // hoisted: tree is built per Platform above
-
+  Widget _treeCard(String tree) {
+    return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppTheme.surface,
@@ -456,11 +421,10 @@ class FolderConventionScreen extends StatelessWidget {
     );
   }
 
-  Widget _ruleCard({
+  Widget _card({
     required IconData icon,
     required String title,
-    required String description,
-    required List<String> highlights,
+    required List<String> bullets,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -495,16 +459,7 @@ class FolderConventionScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          Text(
-            description,
-            style: const TextStyle(
-              color: AppTheme.textSecondary,
-              fontSize: 14,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 12),
-          ...highlights.map((h) => Padding(
+          ...bullets.map((b) => Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -516,7 +471,7 @@ class FolderConventionScreen extends StatelessWidget {
                     ),
                     Expanded(
                       child: Text(
-                        h,
+                        b,
                         style: const TextStyle(
                           color: AppTheme.textPrimary,
                           fontSize: 13.5,

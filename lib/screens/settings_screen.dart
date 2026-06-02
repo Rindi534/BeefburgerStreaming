@@ -2,9 +2,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:path/path.dart' as p;
-import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import '../providers/settings_provider.dart';
 import '../providers/media_library_provider.dart';
 import '../providers/watch_progress_provider.dart';
@@ -318,15 +317,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 builder: (_) => const AppGuideScreen(),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          _buildSettingsTile(
-            context,
-            icon: Icons.bug_report_rounded,
-            title: 'Diagnose-Log öffnen',
-            subtitle:
-                'Plain-Text-Log mit Vollbild-Wechsel-Checkpoints (für Bug-Reports)',
-            onTap: () => _openLogFolder(context),
           ),
 
           const SizedBox(height: 44),
@@ -671,35 +661,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           duration: const Duration(seconds: 3),
         ),
       );
-    }
-  }
-
-  /// Opens the Windows file explorer at the rotating log directory
-  /// (`%APPDATA%\Roaming\...\logs\`). Used for bug reports — the
-  /// fullscreen-toggle diagnostic checkpoints land here in `app.log`.
-  Future<void> _openLogFolder(BuildContext context) async {
-    try {
-      final support = await getApplicationSupportDirectory();
-      final logDir = p.join(support.path, 'logs');
-      final dir = Directory(logDir);
-      if (!await dir.exists()) {
-        await dir.create(recursive: true);
-      }
-      if (Platform.isWindows) {
-        await Process.start('explorer', [logDir],
-            mode: ProcessStartMode.detached);
-      } else if (Platform.isMacOS) {
-        await Process.start('open', [logDir],
-            mode: ProcessStartMode.detached);
-      } else {
-        await Process.start('xdg-open', [logDir],
-            mode: ProcessStartMode.detached);
-      }
-    } catch (e) {
-      if (!context.mounted) return;
-      await _showFolderErrorDialog(context,
-          title: 'Log-Ordner konnte nicht geöffnet werden',
-          message: e.toString());
     }
   }
 
